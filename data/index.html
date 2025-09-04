@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Caldera de Biomasa</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .card {
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .status {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .status:last-child {
+            border-bottom: none;
+        }
+        .status-name {
+            font-weight: bold;
+        }
+        .status-value {
+            padding: 5px 10px;
+            border-radius: 4px;
+            color: white;
+            font-weight: bold;
+        }
+        .on {
+            background-color: #4CAF50;
+        }
+        .off {
+            background-color: #f44336;
+        }
+        .temp-value {
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .logs {
+            height: 300px;
+            overflow-y: auto;
+            background-color: #333;
+            color: #fff;
+            padding: 10px;
+            font-family: monospace;
+            border-radius: 5px;
+            white-space: pre-wrap;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        label {
+            min-width: 200px;
+        }
+        input[type="range"] {
+            flex-grow: 1;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button.danger {
+            background-color: #f44336;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Caldera de Biomasa</h1>
+
+        <div class="card">
+            <h2>Temperaturas</h2>
+            <div class="grid">
+                <div class="status">
+                    <span class="status-name">Agua Caldera:</span>
+                    <span class="temp-value" id="boiler-water-temp">--</span> °C
+                </div>
+                <div class="status">
+                    <span class="status-name">Calefacción:</span>
+                    <span class="temp-value" id="heating-temp">--</span> °C
+                </div>
+                <div class="status">
+                    <span class="status-name">Combustión:</span>
+                    <span class="temp-value" id="burning-temp">--</span> °C
+                </div>
+                <div class="status">
+                    <span class="status-name">Ambiente:</span>
+                    <span class="temp-value" id="ambient-temp">--</span> °C
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Estados</h2>
+            <div class="grid">
+                <div class="status">
+                    <span class="status-name">Bomba Caldera:</span>
+                    <span class="status-value" id="boiler-pump-status">--</span>
+                </div>
+                <div class="status">
+                    <span class="status-name">Bomba Calefacción:</span>
+                    <span class="status-value" id="heating-pump-status">--</span>
+                </div>
+                <div class="status">
+                    <span class="status-name">Ventiladores:</span>
+                    <span class="status-value" id="fans-status">--</span>
+                </div>
+                <div class="status">
+                    <span class="status-name">Otro Dispositivo:</span>
+                    <span class="status-value" id="other-status">--</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Control</h2>
+            <div class="controls">
+                <div class="control-group">
+                    <label for="target-temp">Temperatura Objetivo (°C):</label>
+                    <input type="range" id="target-temp" min="30" max="100" step="1" value="45">
+                    <span id="target-temp-value">45</span>
+                </div>
+                <div class="control-group">
+                    <label>Entrada de Aire:</label>
+                    <span id="air-intake-value">--</span>%
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Configuración PID</h2>
+            <div class="controls">
+                <div class="status">
+                    <span class="status-name">Estado del Autoajuste:</span>
+                    <span class="status-value" id="autotune-status">--</span>
+                </div>
+                <div class="status">
+                    <span class="status-name">Parámetro Kp:</span>
+                    <span id="pid-kp">--</span>
+                </div>
+                <div class="status">
+                    <span class="status-name">Parámetro Ki:</span>
+                    <span id="pid-ki">--</span>
+                </div>
+                <div class="status">
+                    <span class="status-name">Parámetro Kd:</span>
+                    <span id="pid-kd">--</span>
+                </div>
+                <div class="control-group" style="margin-top: 10px;">
+                    <button id="start-autotune">Iniciar Autoajuste</button>
+                    <span style="font-size: 0.8em; color: #666; margin-left: 10px;">
+                        El autoajuste puede tardar varios minutos. Durante este proceso,
+                        la temperatura de combustión oscilará para determinar los parámetros óptimos.
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Registros</h2>
+            <div class="logs" id="logs">
+                Cargando registros...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Función para actualizar datos
+        function updateData() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    // Actualizar temperaturas
+                    document.getElementById('boiler-water-temp').textContent = data.boiler_water_temp.toFixed(1);
+                    document.getElementById('heating-temp').textContent = data.heating_temp.toFixed(1);
+                    document.getElementById('burning-temp').textContent = data.burning_temp.toFixed(1);
+                    document.getElementById('ambient-temp').textContent = data.ambient_temp.toFixed(1);
+
+                    // Actualizar estados
+                    updateStatus('boiler-pump-status', data.boiler_pump);
+                    updateStatus('heating-pump-status', data.heating_pump);
+                    updateStatus('fans-status', data.fans);
+                    updateStatus('other-status', data.other);
+
+                    // Actualizar control
+                    document.getElementById('target-temp').value = data.target_burning_temp;
+                    document.getElementById('target-temp-value').textContent = data.target_burning_temp;
+                    document.getElementById('air-intake-value').textContent = data.air_intake;
+
+                    // Actualizar parámetros PID
+                    document.getElementById('pid-kp').textContent = data.pid.kp.toFixed(3);
+                    document.getElementById('pid-ki').textContent = data.pid.ki.toFixed(3);
+                    document.getElementById('pid-kd').textContent = data.pid.kd.toFixed(3);
+
+                    // Actualizar estado del autoajuste
+                    const autotuneButton = document.getElementById('start-autotune');
+                    if (data.auto_tuning) {
+                        document.getElementById('autotune-status').textContent = 'EN PROCESO';
+                        document.getElementById('autotune-status').className = 'status-value on';
+                        autotuneButton.textContent = 'Cancelar Autoajuste';
+                    } else {
+                        document.getElementById('autotune-status').textContent = 'INACTIVO';
+                        document.getElementById('autotune-status').className = 'status-value off';
+                        autotuneButton.textContent = 'Iniciar Autoajuste';
+                    }
+                })
+                .catch(error => console.error('Error al obtener datos:', error));
+
+            // Actualizar logs
+            fetch('/api/logs')
+                .then(response => response.text())
+                .then(data => {
+                    document.getElementById('logs').textContent = data;
+                    // Auto-scroll al final
+                    const logsElement = document.getElementById('logs');
+                    logsElement.scrollTop = logsElement.scrollHeight;
+                })
+                .catch(error => console.error('Error al obtener logs:', error));
+        }
+
+        // Función para actualizar estados visuales
+        function updateStatus(elementId, isOn) {
+            const element = document.getElementById(elementId);
+            element.textContent = isOn ? 'ON' : 'OFF';
+            element.className = 'status-value ' + (isOn ? 'on' : 'off');
+        }
+
+        // Actualizar valor de temperatura objetivo al mover el slider
+        document.getElementById('target-temp').addEventListener('input', function() {
+            document.getElementById('target-temp-value').textContent = this.value;
+        });
+
+        // Guardar configuración cuando el usuario suelta el slider
+        document.getElementById('target-temp').addEventListener('change', function() {
+            const targetTemp = this.value;
+            saveConfiguration(targetTemp);
+        });
+
+        // Función para guardar la configuración
+        function saveConfiguration(targetTemp) {
+            fetch('/api/settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    target_burning_temp: parseFloat(targetTemp)
+                }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Configuración guardada automáticamente');
+            })
+            .catch(error => {
+                console.error('Error al guardar configuración:', error);
+            });
+        }
+
+        // Iniciar/Cancelar autoajuste del PID
+        document.getElementById('start-autotune').addEventListener('click', function() {
+            const message = this.textContent.includes('Iniciar')
+                ? '¿Está seguro de que desea iniciar el autoajuste del PID? Este proceso puede tardar varios minutos y causará oscilaciones en la temperatura de combustión.'
+                : '¿Está seguro de que desea cancelar el autoajuste del PID en curso?';
+
+            if (confirm(message)) {
+                fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        autotune: true
+                    }),
+                })
+                .then(response => response.json())
+                .then(data => {
+                    // La actualización del estado se manejará en la función updateData
+                })
+                .catch(error => {
+                    console.error('Error al controlar el autoajuste:', error);
+                    alert('Error al controlar el autoajuste');
+                });
+            }
+        });
+
+        // Actualizar datos cada 2 segundos
+        updateData();
+        setInterval(updateData, 2000);
+    </script>
+</body>
+</html>
