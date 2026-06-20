@@ -3,205 +3,161 @@
 
 #include <Arduino.h>
 #include <U8g2lib.h>
-#include <SPI.h>
+#include <Wire.h>
 #include <WiFi.h>
 #include "config.h"
 
+#ifdef OLED_TYPE_SH1106
+  #define _U8G2_TYPE U8G2_SH1106_128X64_NONAME_F_SW_I2C
+#else
+  #define _U8G2_TYPE U8G2_SSD1306_128X64_NONAME_F_SW_I2C
+#endif
+
+// OLED over software I2C on custom SDA/SCL pins.
+// If nothing shows, try defining OLED_TYPE_SH1106 in config.h
 class Display {
 public:
-    // Enumeration for different display screens
     enum ScreenType {
-        SCREEN_MAIN,         // Main data screen
-        SCREEN_NETWORK_INFO  // Network information screen
+        SCREEN_MAIN,
+        SCREEN_NETWORK_INFO
     };
 
-    // Inicialización para MKS MINI 12864 con interfaz SPI
-    // El constructor es para ST7567 controller usado en la pantalla MKS MINI 12864
-    // Uso de SPI por software para poder usar pines personalizados
-    Display() : u8g2(U8G2_R0, GLCD_SCK, GLCD_MOSI, GLCD_CS, GLCD_DC, GLCD_RST) {
+    Display() : u8g2(U8G2_R0, OLED_SCL, OLED_SDA, U8X8_PIN_NONE), available(false) {
         currentScreen = SCREEN_MAIN;
         lastScreenToggle = 0;
-        screenToggleInterval = 5000; // Default a 5 segundos
+        screenToggleInterval = 5000;
     }
 
     void begin() {
-        // Inicializar la pantalla
-        u8g2.begin();
+        available = u8g2.begin();
+        if (!available) return;
+
         u8g2.setFont(u8g2_font_6x10_tf);
         u8g2.setDrawColor(1);
         u8g2.setFontPosTop();
-        u8g2.setContrast(160); // Ajustar contraste para la pantalla ST7567
 
-        // Mostrar pantalla de bienvenida
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_8x13B_tf);
-        u8g2.drawStr(5, 5, "Lumber Boiler");
-        u8g2.drawStr(15, 25, "Manager");
+        u8g2.drawStr(5, 5, "Biomass Boiler");
         u8g2.setFont(u8g2_font_6x10_tf);
-        u8g2.drawStr(25, 45, "Starting...");
+        u8g2.drawStr(25, 30, "Starting...");
         u8g2.sendBuffer();
-        delay(1000);  // Mostrar la pantalla de bienvenida por 1 segundo
+        delay(1000);
     }
 
-    // Update method - to be called regularly from the main loop
-    void update(float boilerWaterTemp, float heatingTemp, float burningTemp, float ambientTemp,
-                bool boilerPump, bool heatingPump, bool fans, float targetBurningTemp, int airIntakePosition) {
+    // Self-test helper: show a full-screen message with up to 4 lines
+    void showMessage(const char* title, const char* l1 = "", const char* l2 = "", const char* l3 = "") {
+        if (!available) return;
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_7x13B_tf);
+        u8g2.drawStr(0, 0, title);
+        u8g2.drawLine(0, 13, 128, 13);
+        u8g2.setFont(u8g2_font_6x10_tf);
+        if (l1 && l1[0]) u8g2.drawStr(0, 16, l1);
+        if (l2 && l2[0]) u8g2.drawStr(0, 28, l2);
+        if (l3 && l3[0]) u8g2.drawStr(0, 40, l3);
+        u8g2.sendBuffer();
+    }
 
-        // Check if it's time to toggle screens
-        unsigned long currentMillis = millis();
-        if (currentMillis - lastScreenToggle >= screenToggleInterval) {
-            lastScreenToggle = currentMillis;
-            // Toggle between screens
+    void update(float boilerSupplyTemp, float floorSupplyTemp, float burningTemp, float ambientLowTemp,
+                bool boilerPump, bool heatingPump, bool fans, float targetBurningTemp, int airIntakePosition) {
+        if (!available) return;
+        unsigned long now = millis();
+        if (now - lastScreenToggle >= screenToggleInterval) {
+            lastScreenToggle = now;
             currentScreen = (currentScreen == SCREEN_MAIN) ? SCREEN_NETWORK_INFO : SCREEN_MAIN;
         }
 
-        // Display the current screen
         u8g2.clearBuffer();
-        if (currentScreen == SCREEN_MAIN) {
-            showMainScreen(boilerWaterTemp, heatingTemp, burningTemp, ambientTemp,
-                          boilerPump, heatingPump, fans, targetBurningTemp, airIntakePosition);
-        } else {
+        if (currentScreen == SCREEN_MAIN)
+            showMainScreen(boilerSupplyTemp, floorSupplyTemp, burningTemp, ambientLowTemp,
+                           boilerPump, heatingPump, fans, targetBurningTemp, airIntakePosition);
+        else
             showNetworkInfo();
-        }
         u8g2.sendBuffer();
     }
 
-    // Force a specific screen to be shown
     void setScreen(ScreenType screen) {
         currentScreen = screen;
-        lastScreenToggle = millis(); // Reset the toggle timer
+        lastScreenToggle = millis();
     }
 
-    // Configure the screen toggle interval
     void setScreenToggleInterval(unsigned long interval) {
         screenToggleInterval = interval;
     }
 
-    bool isAvailable() {
-        return true;  // Always return true as this is a simple implementation
-    }
+    bool isAvailable() { return available; }
 
-    void showAlert(const String& title, const String& line1, const String& line2, const String& line3) {
+    void showAlert(const String& title, const String& l1, const String& l2, const String& l3) {
+        if (!available) return;
         u8g2.clearBuffer();
-
-        // Title in bold
         u8g2.setFont(u8g2_font_7x13B_tf);
         u8g2.drawStr(0, 0, title.c_str());
         u8g2.drawLine(0, 13, 128, 13);
-
-        // Alert text
         u8g2.setFont(u8g2_font_6x10_tf);
-        u8g2.drawStr(0, 16, line1.c_str());
-        u8g2.drawStr(0, 28, line2.c_str());
-        u8g2.drawStr(0, 40, line3.c_str());
-
+        u8g2.drawStr(0, 16, l1.c_str());
+        u8g2.drawStr(0, 28, l2.c_str());
+        u8g2.drawStr(0, 40, l3.c_str());
         u8g2.sendBuffer();
     }
 
-    // Method to show network information screen
     void showNetworkInfo() {
+        if (!available) return;
         u8g2.clearBuffer();
-
-        // Title
         u8g2.setFont(u8g2_font_7x13_tf);
         u8g2.drawStr(0, 0, "Network Info");
         u8g2.drawLine(0, 13, 128, 13);
-
-        // Return to normal font
         u8g2.setFont(u8g2_font_6x10_tf);
 
-        // WiFi Status
-        if (WiFi.status() == WL_CONNECTED) {
-            // Connected to WiFi
+        wifi_mode_t mode = WiFi.getMode();
+        if (mode == WIFI_AP || mode == WIFI_AP_STA) {
+            u8g2.drawStr(0, 16, "Mode: WiFi Setup");
+            String apssid = String(AP_SSID);
+            if (apssid.length() > 18) apssid = apssid.substring(0, 16) + "..";
+            u8g2.drawStr(0, 26, apssid.c_str());
+            u8g2.drawStr(0, 36, ("IP: " + WiFi.softAPIP().toString()).c_str());
+            u8g2.drawStr(0, 46, "Open /wifi-setup");
+        } else if (WiFi.status() == WL_CONNECTED) {
             u8g2.drawStr(0, 16, "WiFi: Connected");
-
-            // Show SSID
             String ssid = WiFi.SSID();
-            if (ssid.length() > 16) {
-                ssid = ssid.substring(0, 14) + "..";
-            }
+            if (ssid.length() > 16) ssid = ssid.substring(0, 14) + "..";
             u8g2.drawStr(0, 26, ("SSID: " + ssid).c_str());
-
-            // Show IP
-            String ip = WiFi.localIP().toString();
-            u8g2.drawStr(0, 36, ("IP: " + ip).c_str());
-
-            // Show Signal strength
+            u8g2.drawStr(0, 36, ("IP: " + WiFi.localIP().toString()).c_str());
             int rssi = WiFi.RSSI();
-            String signal = "Signal: ";
-            if (rssi > -50) signal += "Excellent";
-            else if (rssi > -60) signal += "Good";
-            else if (rssi > -70) signal += "Fair";
-            else signal += "Weak";
-            u8g2.drawStr(0, 46, signal.c_str());
-
-            // Show Host name
+            String sig = rssi > -50 ? "Excellent" : rssi > -60 ? "Good" : rssi > -70 ? "Fair" : "Weak";
+            u8g2.drawStr(0, 46, ("Signal: " + sig).c_str());
             u8g2.drawStr(0, 56, ("Host: " + String(HOSTNAME)).c_str());
         } else {
-            // Not connected
-            u8g2.drawStr(0, 26, "WiFi: Not Connected");
-            u8g2.drawStr(0, 36, "Operating in");
-            u8g2.drawStr(0, 46, "standalone mode");
+            u8g2.drawStr(0, 26, "WiFi: Connecting...");
+            u8g2.drawStr(0, 46, "Standalone mode");
         }
-
         u8g2.sendBuffer();
     }
 
 private:
-    // Method to show the main information screen
-    void showMainScreen(float boilerWaterTemp, float heatingTemp, float burningTemp, float ambientTemp,
-                      bool boilerPump, bool heatingPump, bool fans, float targetBurningTemp, int airIntakePosition) {
-        u8g2.clearBuffer();
-
-        // Title
+    void showMainScreen(float boilerSupplyTemp, float floorSupplyTemp, float burningTemp, float ambientLowTemp,
+                        bool boilerPump, bool heatingPump, bool fans, float targetBurningTemp, int airIntakePosition) {
         u8g2.setFont(u8g2_font_7x13_tf);
         u8g2.drawStr(0, 0, "Biomass Boiler");
         u8g2.drawLine(0, 13, 128, 13);
-
-        // Return to normal font
         u8g2.setFont(u8g2_font_6x10_tf);
 
-        // Temperatures
-        char buffer[32];
-        sprintf(buffer, "Water: %.1fC", boilerWaterTemp);
-        u8g2.drawStr(0, 16, buffer);
+        char buf[32];
+        sprintf(buf, "Cal:   %.1fC", boilerSupplyTemp); u8g2.drawStr(0,  16, buf);
+        sprintf(buf, "Suelo: %.1fC", floorSupplyTemp);  u8g2.drawStr(0,  26, buf);
+        sprintf(buf, "Burn:  %.1fC", burningTemp);      u8g2.drawStr(0,  36, buf);
+        sprintf(buf, "Amb:   %.1fC", ambientLowTemp);   u8g2.drawStr(0,  46, buf);
 
-        sprintf(buffer, "Heat: %.1fC", heatingTemp);
-        u8g2.drawStr(0, 26, buffer);
+        u8g2.drawStr(70, 16, boilerPump  ? "BPump:ON"  : "BPump:OFF");
+        u8g2.drawStr(70, 26, heatingPump ? "HPump:ON"  : "HPump:OFF");
+        u8g2.drawStr(70, 36, fans        ? "Fans:ON"   : "Fans:OFF");
 
-        sprintf(buffer, "Burn: %.1fC", burningTemp);
-        u8g2.drawStr(0, 36, buffer);
-
-        sprintf(buffer, "Amb: %.1fC", ambientTemp);
-        u8g2.drawStr(0, 46, buffer);
-
-        // Status
-        u8g2.drawStr(70, 16, "Pump B:");
-        u8g2.drawStr(115, 16, boilerPump ? "ON" : "OFF");
-
-        u8g2.drawStr(70, 26, "Pump H:");
-        u8g2.drawStr(115, 26, heatingPump ? "ON" : "OFF");
-
-        u8g2.drawStr(70, 36, "Fans:");
-        u8g2.drawStr(115, 36, fans ? "ON" : "OFF");
-
-        // Show IP Address if connected to WiFi
-        if (WiFi.status() == WL_CONNECTED) {
-            String ipStr = WiFi.localIP().toString();
-            u8g2.drawStr(70, 46, "IP:");
-            u8g2.drawStr(85, 46, ipStr.c_str());
-        }
-
-        sprintf(buffer, "Tgt: %.1fC", targetBurningTemp);
-        u8g2.drawStr(0, 56, buffer);
-
-        sprintf(buffer, "Air: %d%%", airIntakePosition);
-        u8g2.drawStr(70, 56, buffer);
-
-        u8g2.sendBuffer();
+        sprintf(buf, "Tgt:%.1fC Air:%d%%", targetBurningTemp, airIntakePosition);
+        u8g2.drawStr(0, 56, buf);
     }
 
-    U8G2_ST7567_OS12864_F_4W_SW_SPI u8g2;
+    _U8G2_TYPE u8g2;
+    bool available;
     ScreenType currentScreen;
     unsigned long lastScreenToggle;
     unsigned long screenToggleInterval;

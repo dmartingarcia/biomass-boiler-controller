@@ -1,63 +1,97 @@
-# Diagrama de Conexiones para MKS MINI 12864 GLCD
+# Diagrama de Conexiones — Biomass Boiler Controller
 
-Este documento proporciona información detallada sobre cómo conectar la pantalla MKS MINI 12864 GLCD a un ESP32 para el proyecto Lumber Boiler Manager.
+Plataforma: **Lolin S2 Mini** (ESP32-S2)
 
-## Especificaciones Técnicas
+## Sensores de temperatura
 
-- **Controlador**: ST7567
-- **Resolución**: 128x64 píxeles
-- **Interfaz**: SPI de 4 hilos (usando SPI por software)
-- **Retroiluminación**: LED (controlable)
-- **Alimentación**: 5V
+### Dallas DS18B20 — bus 1-Wire (múltiples sensores)
 
-## Diagrama de Pines
+| DS18B20 Pin | Conexión            |
+|-------------|---------------------|
+| VDD         | 3.3V                |
+| GND         | GND                 |
+| DQ (data)   | GPIO 11             |
 
-### Conector EXP1 (Interfaz SPI)
+> Resistencia pull-up de **4.7 kΩ** entre DQ y 3.3V obligatoria.  
+> Todos los sensores comparten el mismo pin de datos (bus 1-Wire).  
+> Los sensores se identifican por su dirección única de 64 bits.  
+> Asignar cada dirección a un rol (agua caldera, calefacción, ambiente) desde la web.
 
-| Pin EXP1 | Nombre en MKS MINI | Conectar a ESP32  | Configuración |
-|----------|-------------------|-------------------|---------------|
-| 1        | BEEPER            | No conectado      | -             |
-| 2        | BTN_ENC           | No conectado      | -             |
-| 3        | DOGLCD_MOSI       | GLCD_MOSI (40)    | SPI MOSI      |
-| 4        | DOGLCD_CS         | GLCD_CS (36)      | SPI CS        |
-| 5        | DOGLCD_SCK        | GLCD_SCK (38)     | SPI SCK       |
-| 6        | LCD_PINS_EN       | No conectado      | -             |
-| 7        | DOGLCD_RESET      | GLCD_RST (34)     | Reset         |
-| 8        | GND               | GND               | Tierra        |
-| 9        | DOGLCD_A0         | GLCD_DC (21)      | Data/Command  |
-| 10       | VCC               | 5V                | Alimentación  |
+### MAX6675 — Termopar tipo K (temperatura de combustión)
 
-## Notas Importantes
+| MAX6675 Pin | GPIO S2 Mini |
+|-------------|--------------|
+| VCC         | 3.3V         |
+| GND         | GND          |
+| SCK         | GPIO 7       |
+| SO (MISO)   | GPIO 9       |
+| CS          | GPIO 12      |
 
-1. **Librería U8g2**: La pantalla utiliza el controlador ST7567, y se usa el constructor `U8G2_ST7567_OS12864_F_4W_SW_SPI` para SPI por software.
+> El MAX6675 mide la temperatura de combustión (hasta ~1024°C).  
+> Usa SPI bit-bang (software). Rango útil: 0–1024°C, resolución 0.25°C.
 
-2. **Pines SPI Personalizados**: Se están utilizando pines personalizados para SPI (40, 38, 36, 34, 21) en lugar de los pines SPI hardware estándar del ESP32.
+## Pantalla OLED (SSD1306 / SH1106, 128×64, I2C)
 
-3. **Rotación de Pantalla**: Si la orientación no es correcta, se puede ajustar cambiando el parámetro de rotación en el constructor (`U8G2_R0`, `U8G2_R1`, `U8G2_R2`, o `U8G2_R3`).
+| OLED Pin | GPIO S2 Mini |
+|----------|--------------|
+| VCC      | 3.3V         |
+| GND      | GND          |
+| SDA      | GPIO 35      |
+| SCL      | GPIO 33      |
 
-4. **Contraste**: Puede ser necesario ajustar el contraste con `u8g2.setContrast(160)` en el método `begin()`.
+> Si usas pantalla SH1106 en lugar de SSD1306, cambia el tipo en `display.h`:  
+> `U8G2_SH1106_128X64_NONAME_F_SW_I2C`
 
-5. **Voltaje**: Aunque la lógica del ESP32 es de 3.3V, la pantalla MKS MINI 12864 es compatible con estos niveles lógicos. La alimentación debe ser de 5V para el funcionamiento correcto de la retroiluminación.
+## Relés (salidas)
 
-## Ejemplo de Código
+| Función           | GPIO S2 Mini | Notas                                  |
+|-------------------|--------------|----------------------------------------|
+| Relay EN / Other  | GPIO 0       | Boot strapping pin — activo HIGH recomendado |
+| Bomba caldera     | GPIO 1       |                                        |
+| Bomba calefacción | GPIO 2       |                                        |
+| Ventiladores      | GPIO 3       |                                        |
 
-```cpp
-// Inicialización en constructor (SPI por software)
-Display() : u8g2(U8G2_R0, GLCD_SCK, GLCD_MOSI, GLCD_CS, GLCD_DC, GLCD_RST) {
-    // ...inicialización...
-}
+> GPIO 0 es el pin de strapping de boot. Si tu módulo de relés es active-LOW,
+> asegúrate de que GPIO 0 no quede en LOW durante el arranque o el ESP entrará
+> en modo descarga. Se recomienda módulo de relés con optoacoplador active-HIGH
+> o añadir resistencia pull-up externa.
 
-// Configuración de pantalla
-void begin() {
-    // Inicializar la pantalla
-    u8g2.begin();
-    u8g2.setContrast(160);  // Ajustar contraste según sea necesario
-    // ...más configuración...
+## Servo — Entrada de aire
+
+| Conexión | GPIO S2 Mini |
+|----------|--------------|
+| Signal   | GPIO 19      |
+| VCC      | 5V (externo) |
+| GND      | GND          |
+
+## Alimentación general
+
+- ESP32 S2 Mini: USB o 5V en pin VIN
+- Sensores Dallas y OLED: 3.3V del regulador de la placa
+- Servo y relés: alimentación externa 5V/12V según módulo
+
+## Archivos de configuración en LittleFS
+
+| Archivo                | Contenido                                      |
+|------------------------|------------------------------------------------|
+| `/sensor_config.json`  | Asignación de sensores Dallas a roles          |
+
+Ejemplo de `/sensor_config.json`:
+```json
+{
+  "boiler_water": "28FF7D5A41180264",
+  "heating":      "28FF1234ABCD5678",
+  "ambient":      "28FFABCDEF123456"
 }
 ```
 
-## Referencias
+## API REST
 
-- [Documentación U8g2](https://github.com/olikraus/u8g2/wiki)
-- [Datasheet ST7567](https://www.newhavendisplay.com/app_notes/ST7567.pdf)
-- [MKS MINI 12864 Pinout](https://github.com/makerbase-mks/MKS-MINI12864)
+| Método | Endpoint             | Descripción                                 |
+|--------|----------------------|---------------------------------------------|
+| GET    | /api/status          | Estado general del sistema                  |
+| GET    | /api/logs            | Buffer de logs                              |
+| POST   | /api/settings        | Configurar target temp, PID, autotune       |
+| GET    | /api/dallas/sensors  | Lista todos los sensores Dallas + temps     |
+| POST   | /api/dallas/assign   | `{"role":"boiler_water","address":"28FF…"}` |
+| POST   | /api/dallas/scan     | Re-escanea el bus 1-Wire                    |

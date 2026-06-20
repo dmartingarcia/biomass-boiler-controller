@@ -7,249 +7,262 @@
 #include <ArduinoJson.h>
 #include "config.h"
 
+// Progressive backoff on failed MQTT connects: 30s → 60s → 5min → 30min → 1h
+static const unsigned long MQTT_BACKOFF_MS[] = { 30000UL, 60000UL, 300000UL, 1800000UL, 3600000UL };
+static const uint8_t MQTT_BACKOFF_STEPS = 5;
+
 class HomeAssistant {
 public:
-    HomeAssistant(WiFiClient& wifiClient) : mqttClient(wifiClient), mqttConnected(false) {}
+    struct Status {
+        bool     connected;
+        uint8_t  failCount;
+        int      lastRcCode;
+        unsigned long lastPublishMs;   // millis() of last successful publish, 0 if never
+        unsigned long nextRetryMs;     // millis() when next attempt is scheduled
+        uint32_t publishCount;
+        char     server[64];
+        uint16_t port;
+    };
+
+    HomeAssistant(WiFiClient& wifiClient)
+        : mqttClient(wifiClient),
+          mqttConnected(false),
+          failCount(0),
+          nextRetryMs(0),
+          lastPublishMs(0),
+          lastRcCode(0),
+          publishCount(0),
+          storedCallback(nullptr)
+    {
+        strlcpy(server,    MQTT_SERVER,     sizeof(server));
+        port = MQTT_PORT;
+        strlcpy(user,      MQTT_USER,       sizeof(user));
+        strlcpy(password,  MQTT_PASSWORD,   sizeof(password));
+        strlcpy(baseTopic, MQTT_BASE_TOPIC, sizeof(baseTopic));
+        strlcpy(clientId,  MQTT_CLIENT_ID,  sizeof(clientId));
+    }
+
+    void configure(const char* srv, uint16_t prt,
+                   const char* usr, const char* pwd, const char* topic) {
+        strlcpy(server,    srv,   sizeof(server));
+        port = prt;
+        strlcpy(user,      usr,   sizeof(user));
+        strlcpy(password,  pwd,   sizeof(password));
+        strlcpy(baseTopic, topic, sizeof(baseTopic));
+    }
+
+    // Store callback; also apply it immediately if already connected.
+    void setCallback(void (*cb)(char*, uint8_t*, unsigned int)) {
+        storedCallback = cb;
+        if (mqttConnected && cb) mqttClient.setCallback(cb);
+    }
 
     void begin() {
-        // Only initialize MQTT if there is WiFi connection
         if (WiFi.status() == WL_CONNECTED) {
-            mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
-            mqttConnected = connect();
-
-            if (mqttConnected) {
-                publishDiscovery();
-                Serial.println("MQTT and Home Assistant integration completed");
-            }
-        } else {
-            mqttConnected = false;
-            Serial.println("No WiFi connection, MQTT disabled");
+            mqttConnected = _connect();
+            if (mqttConnected) publishDiscovery();
         }
     }
 
-    void update(float boilerWaterTemp, float heatingTemp, float burningTemp, float ambientTemp,
+    // Call every loop iteration: keeps incoming messages flowing.
+    void tick() {
+        if (mqttConnected && mqttClient.connected()) {
+            mqttClient.loop();
+        }
+    }
+
+    // Reset backoff and schedule an immediate retry.
+    void forceRetry() {
+        failCount  = 0;
+        nextRetryMs = 0;
+        if (mqttClient.connected()) { mqttClient.disconnect(); }
+        mqttConnected = false;
+    }
+
+    void forceReconnect() { forceRetry(); }
+
+    void update(float ambientLow, float boilerIron, float mixSupply, float boilerSupply,
+                float floorSupply, float ambientHigh, float floorReturn, float boilerReturn,
+                float burningTemp,
                 bool boilerPump, bool heatingPump, bool fans, bool otherRelay,
                 float targetBurningTemp, int airIntakePosition) {
 
-        // If there is no WiFi or MQTT, exit immediately
-        if (WiFi.status() != WL_CONNECTED || !mqttConnected) {
-            // Try to reconnect to WiFi and MQTT periodically
-            static unsigned long lastReconnectAttempt = 0;
-            unsigned long now = millis();
-
-            // Try to reconnect every 30 seconds
-            if (now - lastReconnectAttempt > 30000) {
-                lastReconnectAttempt = now;
-
-                // If WiFi is disconnected, we don't try MQTT
-                if (WiFi.status() != WL_CONNECTED) {
-                    return;
-                }
-
-                // Try to reconnect MQTT
-                mqttConnected = connect();
-                if (mqttConnected) {
-                    Serial.println("Reconnected to MQTT");
-                    publishDiscovery(); // Republish on reconnect
-                }
-            }
+        if (!mqttConnected || !mqttClient.connected()) {
+            mqttConnected = false;
+            _scheduleReconnect();
             return;
         }
 
-        // Comprobar conexión MQTT
-        if (!mqttClient.connected()) {
-            mqttConnected = connect();
-            if (!mqttConnected) {
-                return; // Si no podemos conectar, salimos
-            }
-        }
-
-        // Crear JSON para los datos de sensores
-        StaticJsonDocument<512> doc;
-        doc["boiler_water_temp"] = boilerWaterTemp;
-        doc["heating_temp"] = heatingTemp;
-        doc["burning_temp"] = burningTemp;
-        doc["ambient_temp"] = ambientTemp;
-        doc["boiler_pump"] = boilerPump ? "ON" : "OFF";
-        doc["heating_pump"] = heatingPump ? "ON" : "OFF";
-        doc["fans"] = fans ? "ON" : "OFF";
-        doc["other_relay"] = otherRelay ? "ON" : "OFF";
+        StaticJsonDocument<768> doc;
+        doc["ambient_low"]         = ambientLow;
+        doc["boiler_iron"]         = boilerIron;
+        doc["mix_supply"]          = mixSupply;
+        doc["boiler_supply"]       = boilerSupply;
+        doc["floor_supply"]        = floorSupply;
+        doc["ambient_high"]        = ambientHigh;
+        doc["floor_return"]        = floorReturn;
+        doc["boiler_return"]       = boilerReturn;
+        doc["burning_temp"]        = burningTemp;
+        doc["boiler_pump"]         = boilerPump  ? "ON" : "OFF";
+        doc["heating_pump"]        = heatingPump ? "ON" : "OFF";
+        doc["fans"]                = fans        ? "ON" : "OFF";
+        doc["other_relay"]         = otherRelay  ? "ON" : "OFF";
         doc["target_burning_temp"] = targetBurningTemp;
-        doc["air_intake"] = map(airIntakePosition, 0, 180, 0, 100); // Convertir a porcentaje
+        doc["air_intake"]          = map(airIntakePosition, 0, 180, 0, 100);
 
-        char buffer[512];
+        char buffer[768];
         serializeJson(doc, buffer);
 
-        // Publicar estado
-        mqttClient.publish(String(MQTT_BASE_TOPIC + String("/state")).c_str(), buffer, true);
-
-        // Manejar mensajes entrantes
+        if (mqttClient.publish((String(baseTopic) + "/state").c_str(), buffer, true)) {
+            lastPublishMs = millis();
+            publishCount++;
+        }
         mqttClient.loop();
     }
 
-    void setCallback(MQTT_CALLBACK_SIGNATURE) {
-        // Solo establecer el callback si hay conexión MQTT
-        if (mqttConnected) {
-            mqttClient.setCallback(callback);
-        }
-    }
+    bool isMqttConnected() const { return mqttConnected; }
 
-    bool isMqttConnected() const {
-        return mqttConnected;
+    Status getStatus() const {
+        Status s;
+        s.connected      = mqttConnected;
+        s.failCount      = failCount;
+        s.lastRcCode     = lastRcCode;
+        s.lastPublishMs  = lastPublishMs;
+        s.nextRetryMs    = nextRetryMs;
+        s.publishCount   = publishCount;
+        strlcpy(s.server, server, sizeof(s.server));
+        s.port           = port;
+        return s;
     }
 
 private:
-    bool connect() {
-        // Check if WiFi is connected
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("No WiFi connection, cannot connect to MQTT");
-            return false;
+    // Single non-blocking connect attempt. Updates backoff state on failure.
+    bool _connect() {
+        if (WiFi.status() != WL_CONNECTED) return false;
+
+        mqttClient.setServer(server, port);
+        Serial.printf("[MQTT] Connecting to %s:%u ...\n", server, port);
+
+        if (mqttClient.connect(clientId, user, password)) {
+            Serial.println("[MQTT] Connected");
+            failCount   = 0;
+            nextRetryMs = 0;
+            lastRcCode  = 0;
+
+            mqttClient.subscribe((String(baseTopic) + "/set/target_burning_temp").c_str());
+            mqttClient.subscribe((String(baseTopic) + "/set/boiler_pump").c_str());
+            mqttClient.subscribe((String(baseTopic) + "/set/heating_pump").c_str());
+            mqttClient.subscribe((String(baseTopic) + "/set/fans").c_str());
+            mqttClient.subscribe((String(baseTopic) + "/set/other_relay").c_str());
+
+            if (storedCallback) mqttClient.setCallback(storedCallback);
+            return true;
         }
 
-        // Try to connect to MQTT server
-        Serial.print("Connecting to MQTT...");
+        lastRcCode = mqttClient.state();
+        failCount++;
+        uint8_t step = (failCount - 1 < MQTT_BACKOFF_STEPS) ? (failCount - 1) : (MQTT_BACKOFF_STEPS - 1);
+        nextRetryMs  = millis() + MQTT_BACKOFF_MS[step];
 
-        int attempts = 0;
-        const int maxAttempts = 3; // Limit attempts to avoid blocking
-
-        while (!mqttClient.connected() && attempts < maxAttempts) {
-            if (mqttClient.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
-                Serial.println("connected");
-
-                // Subscribe to control topics
-                mqttClient.subscribe(String(MQTT_BASE_TOPIC + String("/set/target_burning_temp")).c_str());
-                mqttClient.subscribe(String(MQTT_BASE_TOPIC + String("/set/boiler_pump")).c_str());
-                mqttClient.subscribe(String(MQTT_BASE_TOPIC + String("/set/heating_pump")).c_str());
-                mqttClient.subscribe(String(MQTT_BASE_TOPIC + String("/set/fans")).c_str());
-                mqttClient.subscribe(String(MQTT_BASE_TOPIC + String("/set/other_relay")).c_str());
-
-                return true;
-            } else {
-                Serial.print("failed, rc=");
-                Serial.print(mqttClient.state());
-                Serial.println(" Trying again...");
-                delay(1000);
-                attempts++;
-            }
-        }
-
-        if (attempts >= maxAttempts) {
-            Serial.println("Could not connect to MQTT after several attempts - System will continue without MQTT");
-        }
-
+        Serial.printf("[MQTT] Failed rc=%d — next retry in %lus (fail #%u)\n",
+                      lastRcCode, MQTT_BACKOFF_MS[step] / 1000UL, failCount);
         return false;
     }
 
+    void _scheduleReconnect() {
+        if (WiFi.status() != WL_CONNECTED) return;
+        unsigned long now = millis();
+        if (nextRetryMs == 0 || now >= nextRetryMs) {
+            mqttConnected = _connect();
+            if (mqttConnected) publishDiscovery();
+        }
+    }
+
     void publishDiscovery() {
-        // Publicar información de descubrimiento para Home Assistant
-        // Esto permite que HA detecte automáticamente los sensores y controles
-
-        // Temperatura del agua de la caldera
-        publishSensor("boiler_water_temp", "Temperatura Agua Caldera", "temperature", "°C");
-
-        // Temperatura de calefacción
-        publishSensor("heating_temp", "Temperatura Calefacción", "temperature", "°C");
-
-        // Temperatura de combustión
-        publishSensor("burning_temp", "Temperatura Combustión", "temperature", "°C");
-
-        // Temperatura ambiente
-        publishSensor("ambient_temp", "Temperatura Ambiente", "temperature", "°C");
-
-        // Bomba de la caldera
-        publishBinarySensor("boiler_pump", "Bomba Caldera", "connectivity");
-
-        // Bomba de calefacción
+        publishSensor("ambient_low",   "Ambiente Abajo",         "temperature", "°C");
+        publishSensor("boiler_iron",   "Hierro Caldera",         "temperature", "°C");
+        publishSensor("mix_supply",    "Ida Mezcla",             "temperature", "°C");
+        publishSensor("boiler_supply", "Ida Caldera",            "temperature", "°C");
+        publishSensor("floor_supply",  "Ida Suelo",              "temperature", "°C");
+        publishSensor("ambient_high",  "Ambiente Arriba",        "temperature", "°C");
+        publishSensor("floor_return",  "Retorno Suelo",          "temperature", "°C");
+        publishSensor("boiler_return", "Retorno Caldera",        "temperature", "°C");
+        publishSensor("burning_temp",  "Temperatura Combustión", "temperature", "°C");
+        publishBinarySensor("boiler_pump",  "Bomba Caldera",     "connectivity");
         publishBinarySensor("heating_pump", "Bomba Calefacción", "connectivity");
-
-        // Ventiladores
-        publishBinarySensor("fans", "Ventiladores", "connectivity");
-
-        // Otro relé
-        publishBinarySensor("other_relay", "Otro Dispositivo", "connectivity");
-
-        // Temperatura objetivo de combustión (control)
+        publishBinarySensor("fans",         "Ventiladores",      "connectivity");
+        publishBinarySensor("other_relay",  "Otro Dispositivo",  "connectivity");
         publishNumberControl("target_burning_temp", "Temperatura Objetivo", "temperature", "°C", 60, 100, 1);
-
-        // Posición de entrada de aire
         publishSensor("air_intake", "Entrada de Aire", "power_factor", "%");
     }
 
-    void publishSensor(const String& id, const String& name, const String& deviceClass, const String& unitOfMeasurement) {
+    void publishSensor(const String& id, const String& name,
+                       const String& deviceClass, const String& unit) {
         StaticJsonDocument<512> doc;
-
-        doc["name"] = name;
-        doc["state_topic"] = String(MQTT_BASE_TOPIC) + "/state";
-        doc["value_template"] = "{{ value_json." + id + " }}";
-        doc["unique_id"] = String("lumber_boiler_") + id;
-        doc["device_class"] = deviceClass;
-        doc["unit_of_measurement"] = unitOfMeasurement;
-
-        JsonObject device = doc.createNestedObject("device");
-        device["identifiers"] = MQTT_CLIENT_ID;
-        device["name"] = "Caldera de Biomasa";
-        device["model"] = "Lumber Boiler Manager";
-        device["manufacturer"] = "ESP32";
-
-        char buffer[512];
-        serializeJson(doc, buffer);
-
-        String topic = String("homeassistant/sensor/lumber_boiler/") + id + "/config";
-        mqttClient.publish(topic.c_str(), buffer, true);
+        doc["name"]                = name;
+        doc["state_topic"]         = String(baseTopic) + "/state";
+        doc["value_template"]      = "{{ value_json." + id + " }}";
+        doc["unique_id"]           = String("lumber_boiler_") + id;
+        doc["device_class"]        = deviceClass;
+        doc["unit_of_measurement"] = unit;
+        _addDevice(doc);
+        char buf[512]; serializeJson(doc, buf);
+        mqttClient.publish((String("homeassistant/sensor/") + clientId + "/" + id + "/config").c_str(), buf, true);
     }
 
     void publishBinarySensor(const String& id, const String& name, const String& deviceClass) {
         StaticJsonDocument<512> doc;
-
-        doc["name"] = name;
-        doc["state_topic"] = String(MQTT_BASE_TOPIC) + "/state";
+        doc["name"]           = name;
+        doc["state_topic"]    = String(baseTopic) + "/state";
         doc["value_template"] = "{{ value_json." + id + " }}";
-        doc["unique_id"] = String("lumber_boiler_") + id;
-        doc["device_class"] = deviceClass;
-
-        JsonObject device = doc.createNestedObject("device");
-        device["identifiers"] = MQTT_CLIENT_ID;
-        device["name"] = "Caldera de Biomasa";
-        device["model"] = "Lumber Boiler Manager";
-        device["manufacturer"] = "ESP32";
-
-        char buffer[512];
-        serializeJson(doc, buffer);
-
-        String topic = String("homeassistant/binary_sensor/lumber_boiler/") + id + "/config";
-        mqttClient.publish(topic.c_str(), buffer, true);
+        doc["unique_id"]      = String("lumber_boiler_") + id;
+        doc["device_class"]   = deviceClass;
+        _addDevice(doc);
+        char buf[512]; serializeJson(doc, buf);
+        mqttClient.publish((String("homeassistant/binary_sensor/") + clientId + "/" + id + "/config").c_str(), buf, true);
     }
 
     void publishNumberControl(const String& id, const String& name, const String& deviceClass,
-                             const String& unitOfMeasurement, float min, float max, float step) {
+                              const String& unit, float minV, float maxV, float step) {
         StaticJsonDocument<512> doc;
-
-        doc["name"] = name;
-        doc["command_topic"] = String(MQTT_BASE_TOPIC) + "/set/" + id;
-        doc["state_topic"] = String(MQTT_BASE_TOPIC) + "/state";
-        doc["value_template"] = "{{ value_json." + id + " }}";
-        doc["unique_id"] = String("lumber_boiler_") + id;
-        doc["device_class"] = deviceClass;
-        doc["unit_of_measurement"] = unitOfMeasurement;
-        doc["min"] = min;
-        doc["max"] = max;
+        doc["name"]                = name;
+        doc["command_topic"]       = String(baseTopic) + "/set/" + id;
+        doc["state_topic"]         = String(baseTopic) + "/state";
+        doc["value_template"]      = "{{ value_json." + id + " }}";
+        doc["unique_id"]           = String("lumber_boiler_") + id;
+        doc["device_class"]        = deviceClass;
+        doc["unit_of_measurement"] = unit;
+        doc["min"]  = minV;
+        doc["max"]  = maxV;
         doc["step"] = step;
+        _addDevice(doc);
+        char buf[512]; serializeJson(doc, buf);
+        mqttClient.publish((String("homeassistant/number/") + clientId + "/" + id + "/config").c_str(), buf, true);
+    }
 
-        JsonObject device = doc.createNestedObject("device");
-        device["identifiers"] = MQTT_CLIENT_ID;
-        device["name"] = "Caldera de Biomasa";
-        device["model"] = "Lumber Boiler Manager";
-        device["manufacturer"] = "ESP32";
-
-        char buffer[512];
-        serializeJson(doc, buffer);
-
-        String topic = String("homeassistant/number/lumber_boiler/") + id + "/config";
-        mqttClient.publish(topic.c_str(), buffer, true);
+    void _addDevice(JsonDocument& doc) {
+        JsonObject dev = doc.createNestedObject("device");
+        dev["identifiers"] = clientId;
+        dev["name"]        = "Caldera de Biomasa";
+        dev["model"]       = "Lumber Boiler Manager";
+        dev["manufacturer"]= "ESP32";
     }
 
     PubSubClient mqttClient;
-    bool mqttConnected;
+    bool         mqttConnected;
+    uint8_t      failCount;
+    unsigned long nextRetryMs;
+    unsigned long lastPublishMs;
+    int           lastRcCode;
+    uint32_t      publishCount;
+    void (*storedCallback)(char*, uint8_t*, unsigned int);
+
+    char     server[64];
+    uint16_t port;
+    char     user[32];
+    char     password[64];
+    char     baseTopic[32];
+    char     clientId[32];
 };
 
 #endif // HOME_ASSISTANT_H

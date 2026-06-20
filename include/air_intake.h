@@ -132,9 +132,23 @@ public:
     double getKi() const { return currentKi; }
     double getKd() const { return currentKd; }
 
+    // Set PID parameters at runtime
+    void setTunings(double kp, double ki, double kd) {
+        currentKp = kp; currentKi = ki; currentKd = kd;
+        pid.SetTunings(kp, ki, kd);
+    }
+
     // Directly set servo position (for emergency control from outside)
     void setPosition(int percentage) {
         setServoPosition(percentage);
+    }
+
+    // Reset PID integral — call when resuming after a non-burning pause
+    // so accumulated windup from temperature mismatch doesn't spike the servo.
+    void resetIntegral() {
+        pid.SetMode(MANUAL);
+        output = 0;
+        pid.SetMode(AUTOMATIC);
     }
 
     // Set minimum servo position (0% air)

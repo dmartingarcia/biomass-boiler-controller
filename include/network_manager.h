@@ -5,272 +5,369 @@
 #include <WiFi.h>
 #include <ArduinoOTA.h>
 #include <LittleFS.h>
+#include <ArduinoJson.h>
 #include "config.h"
 #include "secrets.h"
 #include "home_assistant.h"
 #include "log_buffer.h"
 #include "fs_helper.h"
 
+struct WifiConfig {
+    char ssid[64];
+    char password[64];
+    bool staticIp;
+    char ip[16];
+    char gateway[16];
+    char subnet[16];
+    char dns[16];
+
+    WifiConfig() {
+        ssid[0]     = '\0';
+        password[0] = '\0';
+        staticIp    = false;
+        strlcpy(ip,      DEFAULT_STATIC_IP,      sizeof(ip));
+        strlcpy(gateway, DEFAULT_STATIC_GATEWAY, sizeof(gateway));
+        strlcpy(subnet,  DEFAULT_STATIC_SUBNET,  sizeof(subnet));
+        strlcpy(dns,     DEFAULT_STATIC_DNS,     sizeof(dns));
+    }
+};
+
 class NetworkManager {
 public:
     enum WiFiState {
         WIFI_DISCONNECTED,
         WIFI_CONNECTING,
-        WIFI_CONNECTED
+        WIFI_CONNECTED,
+        WIFI_AP_MODE
     };
 
-    public:
+    enum ScanState {
+        SCAN_IDLE,
+        SCAN_RUNNING,
+        SCAN_DONE
+    };
+
     NetworkManager() {
-        wifiState = WIFI_DISCONNECTED;
+        wifiState           = WIFI_DISCONNECTED;
         connectionStartTime = 0;
-        connectionAttempt = 0;
-        lastWifiCheckTime = 0;
-        wifiWasConnected = false;
-        onWifiConnected = nullptr;
-        onWifiDisconnected = nullptr;
+        connectionAttempt   = 0;
+        lastWifiCheckTime   = 0;
+        wifiWasConnected    = false;
+        scanState           = SCAN_IDLE;
+        onWifiConnected     = nullptr;
+        onWifiDisconnected  = nullptr;
+        onAPModeStarted     = nullptr;
+        logBuffer           = nullptr;
+        homeAssistant       = nullptr;
     }
 
+    // LittleFS must be mounted before calling begin()
     void begin(LogBuffer* logBufferPtr = nullptr, HomeAssistant* homeAssistantPtr = nullptr) {
-        logBuffer = logBufferPtr;
+        logBuffer     = logBufferPtr;
         homeAssistant = homeAssistantPtr;
 
-        // Configure WiFi in station mode
-        WiFi.mode(WIFI_STA);
         WiFi.hostname(HOSTNAME);
 
-        // Start WiFi connection process
-        startWiFiConnection();
-
-        // Initialize LittleFS filesystem with our helper
-        if (!FSHelper::initializeLittleFS()) {
-            Serial.println("Error initializing LittleFS");
-            if (logBuffer) logBuffer->log("Error initializing LittleFS");
+        if (!loadConfig(currentConfig)) {
+            // No config file — migrate from compile-time defaults if present
+            if (strlen(WIFI_SSID) > 0) {
+                strlcpy(currentConfig.ssid,     WIFI_SSID,     sizeof(currentConfig.ssid));
+                strlcpy(currentConfig.password, WIFI_PASSWORD, sizeof(currentConfig.password));
+                currentConfig.staticIp = true;
+                saveConfig(currentConfig);
+                if (logBuffer) logBuffer->log("WiFi config created from firmware defaults");
+            }
         }
 
-        // Configure and start ArduinoOTA
+        if (strlen(currentConfig.ssid) == 0) {
+            startAPMode();
+        } else {
+            startWiFiConnection();
+        }
+
         setupOTA();
-    }    // This method should be called regularly from loop()
+    }
+
     void update() {
         unsigned long currentMillis = millis();
 
-        // Handle OTA if connected
         if (wifiState == WIFI_CONNECTED) {
             ArduinoOTA.handle();
         }
 
-        // Handle connection process if trying to connect
         if (wifiState == WIFI_CONNECTING) {
             handleWiFiConnection();
         }
 
-        // Periodically check WiFi connection status
+        // Drive async WiFi scan
+        if (scanState == SCAN_RUNNING) {
+            int n = WiFi.scanComplete();
+            if (n >= 0) {
+                buildScanJson(n);
+                WiFi.scanDelete();
+                scanState = SCAN_DONE;
+            } else if (n == WIFI_SCAN_FAILED) {
+                scanJson  = "{\"networks\":[],\"error\":\"scan failed\"}";
+                scanState = SCAN_IDLE;
+            }
+        }
+
         if (currentMillis - lastWifiCheckTime >= WIFI_RECONNECT_INTERVAL) {
             lastWifiCheckTime = currentMillis;
 
-            // Try to reconnect WiFi if connection was lost and not already trying to connect
-            if (WiFi.status() != WL_CONNECTED && wifiState != WIFI_CONNECTED && wifiState != WIFI_CONNECTING) {
-                Serial.println("WiFi connection lost. Attempting to reconnect...");
-                if (logBuffer) logBuffer->log("WiFi connection lost. Attempting to reconnect...");
+            if (wifiState == WIFI_CONNECTED) {
+                checkWifiStateChanges(currentMillis);
+                if (homeAssistant && !homeAssistant->isMqttConnected()) {
+                    homeAssistant->begin();
+                    if (homeAssistant->isMqttConnected()) {
+                        if (logBuffer) logBuffer->log("Reconnected to MQTT");
+                    }
+                }
+            } else if (wifiState == WIFI_DISCONNECTED) {
+                if (logBuffer) logBuffer->log("WiFi disconnected, reconnecting...");
                 startWiFiConnection();
             }
-
-            // Check for WiFi state changes
-            checkWifiStateChanges(currentMillis);
-
-            // Try to reconnect MQTT if WiFi is connected but MQTT isn't
-            if (homeAssistant && wifiState == WIFI_CONNECTED && !homeAssistant->isMqttConnected()) {
-                homeAssistant->begin();
-                if (homeAssistant->isMqttConnected()) {
-                    if (logBuffer) logBuffer->log("Reconnected to MQTT");
-                }
-            }
+            // Don't reconnect when in AP_MODE — user might be configuring
         }
     }
 
-    bool isConnected() const {
-        return wifiState == WIFI_CONNECTED;
+    bool isConnected()  const { return wifiState == WIFI_CONNECTED; }
+    bool isConnecting() const { return wifiState == WIFI_CONNECTING; }
+    bool isAPMode()     const { return wifiState == WIFI_AP_MODE; }
+
+    IPAddress getIP()        const { return WiFi.localIP(); }
+    IPAddress getAPIP()      const { return WiFi.softAPIP(); }
+    String    getSSID()      const { return WiFi.SSID(); }
+    String    getIPAddress() const { return WiFi.localIP().toString(); }
+    int       getWifiSignalStrength() const { return WiFi.RSSI(); }
+    bool      isMqttConnected() const { return homeAssistant ? homeAssistant->isMqttConnected() : false; }
+
+    void setOnWifiConnectedCallback(void (*cb)())    { onWifiConnected    = cb; }
+    void setOnWifiDisconnectedCallback(void (*cb)()) { onWifiDisconnected = cb; }
+    void setOnAPModeCallback(void (*cb)())           { onAPModeStarted    = cb; }
+
+    void showNetworkInfo() { if (onWifiConnected) onWifiConnected(); }
+
+    // ── Config management ──────────────────────────────────────────────────
+
+    bool loadConfig(WifiConfig& cfg) {
+        if (!LittleFS.exists(WIFI_CONFIG_FILE)) return false;
+        File f = LittleFS.open(WIFI_CONFIG_FILE, "r");
+        if (!f) return false;
+
+        StaticJsonDocument<512> doc;
+        DeserializationError err = deserializeJson(doc, f);
+        f.close();
+        if (err) return false;
+
+        strlcpy(cfg.ssid,     doc["ssid"]      | "", sizeof(cfg.ssid));
+        strlcpy(cfg.password, doc["password"]  | "", sizeof(cfg.password));
+        cfg.staticIp = doc["static_ip"] | false;
+        strlcpy(cfg.ip,      doc["ip"]      | DEFAULT_STATIC_IP,      sizeof(cfg.ip));
+        strlcpy(cfg.gateway, doc["gateway"] | DEFAULT_STATIC_GATEWAY, sizeof(cfg.gateway));
+        strlcpy(cfg.subnet,  doc["subnet"]  | DEFAULT_STATIC_SUBNET, sizeof(cfg.subnet));
+        strlcpy(cfg.dns,     doc["dns"]     | DEFAULT_STATIC_DNS,    sizeof(cfg.dns));
+
+        return strlen(cfg.ssid) > 0;
     }
 
-    bool isConnecting() const {
-        return wifiState == WIFI_CONNECTING;
+    bool saveConfig(const WifiConfig& cfg) {
+        File f = LittleFS.open(WIFI_CONFIG_FILE, "w");
+        if (!f) return false;
+
+        StaticJsonDocument<512> doc;
+        doc["ssid"]      = cfg.ssid;
+        doc["password"]  = cfg.password;
+        doc["static_ip"] = cfg.staticIp;
+        doc["ip"]        = cfg.ip;
+        doc["gateway"]   = cfg.gateway;
+        doc["subnet"]    = cfg.subnet;
+        doc["dns"]       = cfg.dns;
+
+        serializeJson(doc, f);
+        f.close();
+        return true;
     }
 
-    // Function to get the IP address
-    IPAddress getIP() const {
-        return WiFi.localIP();
+    bool deleteConfig() { return LittleFS.remove(WIFI_CONFIG_FILE); }
+
+    WifiConfig& getConfig() { return currentConfig; }
+
+    // ── WiFi scan (async) ──────────────────────────────────────────────────
+
+    // Starts a background scan; returns false if a scan is already running
+    bool startScan() {
+        if (scanState == SCAN_RUNNING) return false;
+        scanJson  = "";
+        scanState = SCAN_RUNNING;
+        WiFi.scanNetworks(true); // non-blocking
+        return true;
     }
 
-    // Get SSID of connected network
-    String getSSID() const {
-        return WiFi.SSID();
-    }
+    bool     isScanRunning() const { return scanState == SCAN_RUNNING; }
+    bool     isScanDone()    const { return scanState == SCAN_DONE; }
+    String   getScanJson()   const { return scanJson; }
 
-    // Get IP address as string
-    String getIPAddress() const {
-        return WiFi.localIP().toString();
-    }
+    // ── Connection management ──────────────────────────────────────────────
 
-    // Get WiFi signal strength
-    int getWifiSignalStrength() const {
-        return WiFi.RSSI();
-    }
-
-    // Get MQTT connection status
-    bool isMqttConnected() const {
-        return homeAssistant ? homeAssistant->isMqttConnected() : false;
-    }    // Setters for callbacks
-    void setOnWifiConnectedCallback(void (*callback)()) {
-        onWifiConnected = callback;
-    }
-
-    void setOnWifiDisconnectedCallback(void (*callback)()) {
-        onWifiDisconnected = callback;
-    }
-
-    // Function to force display of network information
-    void showNetworkInfo() {
-        if (onWifiConnected) {
-            onWifiConnected();
-        }
-    }
-
-    // Start a new connection attempt
-    void startWiFiConnection() {
-        if (wifiState == WIFI_CONNECTING) {
-            return; // Already trying to connect
-        }
+    void startAPMode() {
+        Serial.println("Starting AP mode: " + String(AP_SSID));
+        if (logBuffer) logBuffer->log("Starting AP: " + String(AP_SSID));
 
         WiFi.disconnect();
-        wifiState = WIFI_CONNECTING;
-        connectionStartTime = millis();
-        connectionAttempt = 0;
+        // AP_STA so we can still scan for networks from the setup page
+        WiFi.mode(WIFI_AP_STA);
 
-        Serial.println("Starting WiFi connection...");
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        if (strlen(AP_PASSWORD) > 0) {
+            WiFi.softAP(AP_SSID, AP_PASSWORD);
+        } else {
+            WiFi.softAP(AP_SSID);
+        }
+
+        IPAddress apIP = WiFi.softAPIP();
+        Serial.println("AP IP: " + apIP.toString());
+        if (logBuffer) logBuffer->log("AP IP: " + apIP.toString());
+
+        wifiState = WIFI_AP_MODE;
+        if (onAPModeStarted) onAPModeStarted();
+    }
+
+    void startWiFiConnection() {
+        if (wifiState == WIFI_CONNECTING) return;
+
+        WiFi.disconnect();
+        WiFi.mode(WIFI_STA);
+        WiFi.hostname(HOSTNAME);
+        wifiState           = WIFI_CONNECTING;
+        connectionStartTime = millis();
+        connectionAttempt   = 0;
+
+        if (currentConfig.staticIp) {
+            IPAddress ip, gw, sn, dns;
+            ip.fromString(currentConfig.ip);
+            gw.fromString(currentConfig.gateway);
+            sn.fromString(currentConfig.subnet);
+            dns.fromString(currentConfig.dns);
+            WiFi.config(ip, gw, sn, dns);
+        }
+
+        Serial.println("Connecting to: " + String(currentConfig.ssid));
+        WiFi.begin(currentConfig.ssid, currentConfig.password);
     }
 
 private:
-    void checkWifiStateChanges(unsigned long currentMillis) {
-        // Check for WiFi connection state changes
-        if (wifiState == WIFI_CONNECTED && !wifiWasConnected) {
-            // WiFi just connected
+    void checkWifiStateChanges(unsigned long /*currentMillis*/) {
+        bool physically = (WiFi.status() == WL_CONNECTED);
+
+        if (physically && !wifiWasConnected) {
             wifiWasConnected = true;
-            String ipAddress = getIP().toString();
-            Serial.println("Connected to WiFi, IP: " + ipAddress);
-            if (logBuffer) logBuffer->log("Connected to WiFi, IP: " + ipAddress);
-
-            // Call the connection callback if defined
-            if (onWifiConnected) {
-                onWifiConnected();
-            }
-
-            // Try to connect to MQTT
+            String ip = getIP().toString();
+            Serial.println("Connected to WiFi, IP: " + ip);
+            if (logBuffer) logBuffer->log("Connected to WiFi, IP: " + ip);
+            if (onWifiConnected) onWifiConnected();
             if (homeAssistant) {
                 homeAssistant->begin();
                 if (homeAssistant->isMqttConnected()) {
                     if (logBuffer) logBuffer->log("Home Assistant integration started");
                 } else {
-                    if (logBuffer) logBuffer->log("Could not connect to MQTT - Continuing without Home Assistant");
+                    if (logBuffer) logBuffer->log("Could not connect to MQTT");
                 }
             }
-        } else if (wifiState != WIFI_CONNECTED && wifiWasConnected) {
-            // WiFi just disconnected
+        } else if (!physically && wifiWasConnected) {
             wifiWasConnected = false;
+            wifiState        = WIFI_DISCONNECTED;
             Serial.println("WiFi connection lost");
             if (logBuffer) logBuffer->log("WiFi connection lost");
-
-            // Call the disconnection callback if defined
-            if (onWifiDisconnected) {
-                onWifiDisconnected();
-            }
+            if (onWifiDisconnected) onWifiDisconnected();
         }
     }
+
     void handleWiFiConnection() {
-        unsigned long currentTime = millis();
+        unsigned long now = millis();
 
-        // Check connection status
         if (WiFi.status() == WL_CONNECTED) {
-            // Connection successful
-            Serial.println();
-            Serial.print("Connected to WiFi, IP: ");
-            Serial.println(WiFi.localIP());
-
+            Serial.println("\nConnected, IP: " + WiFi.localIP().toString());
             wifiState = WIFI_CONNECTED;
-            Serial.println("OTA service started");
+            checkWifiStateChanges(now);
             return;
         }
 
-        // Check for timeout (3 seconds per attempt)
-        if (currentTime - connectionStartTime > 3000) {
+        if (now - connectionStartTime > 3000) {
             connectionAttempt++;
 
             if (connectionAttempt >= MAX_WIFI_ATTEMPTS) {
-                // Max attempts reached, move to disconnected state
-                Serial.println("\nFailed to connect to WiFi after maximum attempts");
-                Serial.println("System will continue without connectivity");
-                wifiState = WIFI_DISCONNECTED;
+                Serial.println("\nWiFi failed — starting AP mode");
+                if (logBuffer) logBuffer->log(
+                    "WiFi failed after " + String(MAX_WIFI_ATTEMPTS) + " attempts — AP mode");
+                startAPMode();
                 return;
             }
 
-            // Try again
             Serial.print(".");
-            connectionStartTime = currentTime;
+            connectionStartTime = now;
             WiFi.disconnect();
-            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+            WiFi.begin(currentConfig.ssid, currentConfig.password);
         }
     }
 
+    void buildScanJson(int count) {
+        StaticJsonDocument<2048> doc;
+        JsonArray arr = doc.createNestedArray("networks");
+        for (int i = 0; i < count && i < 20; i++) {
+            JsonObject net = arr.createNestedObject();
+            net["ssid"]      = WiFi.SSID(i);
+            net["rssi"]      = WiFi.RSSI(i);
+            net["encrypted"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+        }
+        serializeJson(doc, scanJson);
+    }
+
     void setupOTA() {
-        // Configure OTA
         ArduinoOTA.setHostname(HOSTNAME);
         ArduinoOTA.setPassword(OTA_PASSWORD);
 
         ArduinoOTA.onStart([]() {
-            String type;
-            if (ArduinoOTA.getCommand() == U_FLASH) {
-                type = "sketch";
-            } else { // U_SPIFFS
-                type = "filesystem";
-            }
-            Serial.println("Starting OTA update: " + type);
+            String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
+            Serial.println("OTA start: " + type);
         });
-
         ArduinoOTA.onEnd([]() {
-            Serial.println("\nOTA update completed");
+            Serial.println("\nOTA complete");
         });
-
         ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-            Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+            Serial.printf("OTA: %u%%\r", (progress / (total / 100)));
         });
-
         ArduinoOTA.onError([](ota_error_t error) {
-            Serial.printf("Error OTA[%u]: ", error);
-            if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-            else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+            Serial.printf("OTA Error[%u]: ", error);
+            if      (error == OTA_AUTH_ERROR)    Serial.println("Auth Failed");
+            else if (error == OTA_BEGIN_ERROR)   Serial.println("Begin Failed");
             else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
             else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-            else if (error == OTA_END_ERROR) Serial.println("End Failed");
+            else if (error == OTA_END_ERROR)     Serial.println("End Failed");
         });
 
         ArduinoOTA.begin();
         Serial.println("OTA configured");
     }
 
-    WiFiState wifiState;
-    unsigned long connectionStartTime;
-    int connectionAttempt;
-    unsigned long lastWifiCheckTime;
-    bool wifiWasConnected;
+    WiFiState  wifiState;
+    ScanState  scanState;
+    String     scanJson;
 
-    // Callbacks
+    unsigned long connectionStartTime;
+    int           connectionAttempt;
+    unsigned long lastWifiCheckTime;
+    bool          wifiWasConnected;
+
+    WifiConfig currentConfig;
+
     void (*onWifiConnected)();
     void (*onWifiDisconnected)();
+    void (*onAPModeStarted)();
 
-    // References to other components
-    LogBuffer* logBuffer;
+    LogBuffer*    logBuffer;
     HomeAssistant* homeAssistant;
 
-    static const int MAX_WIFI_ATTEMPTS = 10; // Maximum number of connection attempts
+    static const int MAX_WIFI_ATTEMPTS = 10;
 };
 
 #endif // NETWORK_MANAGER_H

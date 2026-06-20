@@ -2,36 +2,63 @@
 #define RELAY_H
 
 #include <Arduino.h>
-#include "config.h"
 
-// Clase para un relay individual
 class Relay {
 public:
-    Relay(uint8_t pin, const String& name) :
-        pin(pin), name(name), state(false) {}
+    Relay(uint8_t pin, const char* name)
+        : pin(pin), name(name), state(false), desiredState(false),
+          lastChangeTime(0), debounceMs(0), initialized(false) {}
 
     void begin() {
         pinMode(pin, OUTPUT);
-        setState(false); // Iniciar apagado
+        applyState(false);
+        initialized = false;  // first setState() takes effect immediately
     }
 
+    // Express desired state — applied after debounce period expires
     void setState(bool newState) {
-        digitalWrite(pin, newState ? HIGH : LOW);
-        state = newState;
+        desiredState = newState;
     }
 
-    bool getState() const {
-        return state;
+    // Apply immediately, bypassing debounce (emergency / manual override)
+    void forceState(bool newState) {
+        desiredState = newState;
+        applyState(newState);
+        initialized = true;
     }
 
-    String getName() const {
-        return name;
+    // Call every loop iteration. Returns true if the physical state changed.
+    bool tick() {
+        if (desiredState == state) return false;
+        if (!initialized || (millis() - lastChangeTime) >= debounceMs) {
+            applyState(desiredState);
+            initialized = true;
+            return true;
+        }
+        return false;
     }
+
+    bool getState()        const { return state; }
+    bool getDesiredState() const { return desiredState; }
+    const char* getName()  const { return name; }
+
+    void setDebounce(unsigned long ms) { debounceMs = ms; }
+    unsigned long getDebounceMs() const { return debounceMs; }
 
 private:
-    uint8_t pin;
-    String name;
-    bool state;
+    void applyState(bool s) {
+        digitalWrite(pin, s ? HIGH : LOW);
+        state = s;
+        lastChangeTime = millis();
+    }
+
+    uint8_t       pin;
+    const char*   name;
+    bool          state;
+    bool          desiredState;
+    unsigned long lastChangeTime;
+    unsigned long debounceMs;
+    bool          initialized;
 };
 
 #endif // RELAY_H

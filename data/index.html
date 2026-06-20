@@ -5,327 +5,1047 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Caldera de Biomasa</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; background: #f0f2f5; color: #333; }
+
+        /* ── Tab navigation ─────────────────────────────────────── */
+        .tabs {
+            display: flex;
+            background: #1a237e;
+            position: sticky; top: 0; z-index: 100;
+            overflow-x: auto;
         }
-        h1 {
-            color: #333;
-            text-align: center;
+        .tab {
+            flex: 1; min-width: 80px;
+            padding: 14px 8px;
+            background: none; border: none; color: #9fa8da;
+            font-size: 13px; font-weight: bold; cursor: pointer;
+            border-bottom: 3px solid transparent;
+            white-space: nowrap;
         }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
+        .tab.active { color: #fff; border-bottom-color: #ff6f00; }
+        .tab:hover:not(.active) { color: #c5cae9; }
+
+        /* ── Pages ──────────────────────────────────────────────── */
+        .page { display: none; padding: 16px; max-width: 860px; margin: 0 auto; }
+        .page.active { display: block; }
+
+        /* ── Cards ──────────────────────────────────────────────── */
         .card {
-            background-color: #fff;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            padding: 20px;
-            margin-bottom: 20px;
+            background: #fff; border-radius: 8px;
+            box-shadow: 0 1px 4px rgba(0,0,0,.12);
+            padding: 16px; margin-bottom: 16px;
         }
-        .grid {
+        .card h2 { font-size: 15px; font-weight: bold; margin-bottom: 12px; color: #1a237e; }
+
+        /* ── Status rows ─────────────────────────────────────────── */
+        .row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 8px 0; border-bottom: 1px solid #f0f0f0;
+        }
+        .row:last-child { border-bottom: none; }
+        .row-label { font-weight: bold; font-size: 14px; }
+        .badge {
+            padding: 4px 10px; border-radius: 4px;
+            color: #fff; font-weight: bold; font-size: 13px;
+        }
+        .on  { background: #388e3c; }
+        .off { background: #c62828; }
+
+        /* ── Temperature grid ───────────────────────────────────── */
+        .temp-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-        .status {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px 0;
-            border-bottom: 1px solid #eee;
-        }
-        .status:last-child {
-            border-bottom: none;
-        }
-        .status-name {
-            font-weight: bold;
-        }
-        .status-value {
-            padding: 5px 10px;
-            border-radius: 4px;
-            color: white;
-            font-weight: bold;
-        }
-        .on {
-            background-color: #4CAF50;
-        }
-        .off {
-            background-color: #f44336;
-        }
-        .temp-value {
-            font-weight: bold;
-            font-size: 1.2em;
-        }
-        .logs {
-            height: 300px;
-            overflow-y: auto;
-            background-color: #333;
-            color: #fff;
-            padding: 10px;
-            font-family: monospace;
-            border-radius: 5px;
-            white-space: pre-wrap;
-        }
-        .controls {
-            display: flex;
-            flex-direction: column;
+            grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
             gap: 10px;
         }
-        .control-group {
-            display: flex;
-            align-items: center;
-            gap: 10px;
+        .temp-cell {
+            background: #f5f7ff; border-radius: 6px;
+            padding: 10px 12px;
         }
-        label {
-            min-width: 200px;
-        }
-        input[type="range"] {
-            flex-grow: 1;
-        }
+        .temp-cell .label { font-size: 11px; color: #555; margin-bottom: 4px; }
+        .temp-cell .value { font-size: 22px; font-weight: bold; color: #1a237e; }
+        .temp-cell .value.err { color: #c62828; font-size: 16px; }
+
+        /* ── Buttons ────────────────────────────────────────────── */
         button {
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            padding: 10px 15px;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
-            font-size: 16px;
-            margin: 4px 2px;
-            cursor: pointer;
-            border-radius: 4px;
+            border: none; border-radius: 4px; cursor: pointer;
+            padding: 9px 16px; font-size: 14px; color: #fff;
+            background: #388e3c;
         }
-        button.danger {
-            background-color: #f44336;
+        button.danger  { background: #c62828; }
+        button.blue    { background: #1565c0; }
+        button.grey    { background: #546e7a; }
+        button.orange  { background: #e65100; }
+        button:disabled { background: #bdbdbd; cursor: default; }
+
+        /* ── Form controls ──────────────────────────────────────── */
+        .form-row {
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 0; border-bottom: 1px solid #f0f0f0;
+            flex-wrap: wrap;
         }
+        .form-row:last-child { border-bottom: none; }
+        .form-row label { min-width: 220px; font-size: 13px; font-weight: bold; }
+        .form-row input[type=number],
+        .form-row input[type=text],
+        .form-row input[type=password] {
+            width: 130px; padding: 6px 8px; border: 1px solid #ccc;
+            border-radius: 4px; font-size: 14px;
+        }
+        .form-row input[type=range] { flex: 1; min-width: 120px; }
+        .form-row .val { min-width: 45px; font-size: 14px; font-weight: bold; color: #1a237e; }
+
+        /* ── Manual actuator grid ───────────────────────────────── */
+        .act-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px; margin-top: 12px;
+        }
+        .act-cell {
+            background: #f5f7ff; border-radius: 6px; padding: 10px 12px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .act-cell .name { font-size: 13px; font-weight: bold; }
+        .act-btns { display: flex; gap: 6px; }
+
+        /* ── Alert strip ────────────────────────────────────────── */
+        .alert { padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 12px; }
+        .alert-warn { background: #fff3e0; color: #e65100; }
+        .alert-ok   { background: #e8f5e9; color: #2e7d32; }
+        .alert-err  { background: #ffebee; color: #c62828; }
+
+        /* ── Logs ───────────────────────────────────────────────── */
+        .logs {
+            height: 280px; overflow-y: auto;
+            background: #1e1e1e; color: #d4d4d4;
+            padding: 10px; font-family: monospace; font-size: 12px;
+            border-radius: 6px; white-space: pre-wrap;
+        }
+
+        /* ── Dallas table ───────────────────────────────────────── */
+        .dallas-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .dallas-table th { background: #e8eaf6; padding: 8px; text-align: left; }
+        .dallas-table td { padding: 7px 8px; border-bottom: 1px solid #f0f0f0; }
+        .dallas-table select { padding: 4px 6px; border-radius: 4px; border: 1px solid #ccc; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Caldera de Biomasa</h1>
 
-        <div class="card">
-            <h2>Temperaturas</h2>
-            <div class="grid">
-                <div class="status">
-                    <span class="status-name">Agua Caldera:</span>
-                    <span class="temp-value" id="boiler-water-temp">--</span> °C
-                </div>
-                <div class="status">
-                    <span class="status-name">Calefacción:</span>
-                    <span class="temp-value" id="heating-temp">--</span> °C
-                </div>
-                <div class="status">
-                    <span class="status-name">Combustión:</span>
-                    <span class="temp-value" id="burning-temp">--</span> °C
-                </div>
-                <div class="status">
-                    <span class="status-name">Ambiente:</span>
-                    <span class="temp-value" id="ambient-temp">--</span> °C
-                </div>
-            </div>
-        </div>
+<!-- ── Navigation ──────────────────────────────────────────────── -->
+<nav class="tabs">
+    <button type="button" class="tab active" onclick="showPage('dashboard',this)">Dashboard</button>
+    <button type="button" class="tab" onclick="showPage('manual',this)">Manual</button>
+    <button type="button" class="tab" onclick="showPage('config',this)">Config</button>
+    <button type="button" class="tab" onclick="showPage('debug',this)">Debug</button>
+</nav>
 
-        <div class="card">
-            <h2>Estados</h2>
-            <div class="grid">
-                <div class="status">
-                    <span class="status-name">Bomba Caldera:</span>
-                    <span class="status-value" id="boiler-pump-status">--</span>
-                </div>
-                <div class="status">
-                    <span class="status-name">Bomba Calefacción:</span>
-                    <span class="status-value" id="heating-pump-status">--</span>
-                </div>
-                <div class="status">
-                    <span class="status-name">Ventiladores:</span>
-                    <span class="status-value" id="fans-status">--</span>
-                </div>
-                <div class="status">
-                    <span class="status-name">Otro Dispositivo:</span>
-                    <span class="status-value" id="other-status">--</span>
-                </div>
-            </div>
-        </div>
+<!-- ── DASHBOARD ───────────────────────────────────────────────── -->
+<div id="page-dashboard" class="page active">
 
-        <div class="card">
-            <h2>Control</h2>
-            <div class="controls">
-                <div class="control-group">
-                    <label for="target-temp">Temperatura Objetivo (°C):</label>
-                    <input type="range" id="target-temp" min="30" max="100" step="1" value="45">
-                    <span id="target-temp-value">45</span>
-                </div>
-                <div class="control-group">
-                    <label>Entrada de Aire:</label>
-                    <span id="air-intake-value">--</span>%
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>Configuración PID</h2>
-            <div class="controls">
-                <div class="status">
-                    <span class="status-name">Estado del Autoajuste:</span>
-                    <span class="status-value" id="autotune-status">--</span>
-                </div>
-                <div class="status">
-                    <span class="status-name">Parámetro Kp:</span>
-                    <span id="pid-kp">--</span>
-                </div>
-                <div class="status">
-                    <span class="status-name">Parámetro Ki:</span>
-                    <span id="pid-ki">--</span>
-                </div>
-                <div class="status">
-                    <span class="status-name">Parámetro Kd:</span>
-                    <span id="pid-kd">--</span>
-                </div>
-                <div class="control-group" style="margin-top: 10px;">
-                    <button id="start-autotune">Iniciar Autoajuste</button>
-                    <span style="font-size: 0.8em; color: #666; margin-left: 10px;">
-                        El autoajuste puede tardar varios minutos. Durante este proceso,
-                        la temperatura de combustión oscilará para determinar los parámetros óptimos.
-                    </span>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>Registros</h2>
-            <div class="logs" id="logs">
-                Cargando registros...
+    <div class="card">
+        <h2>Modo de control</h2>
+        <div class="row">
+            <span class="row-label">Estado</span>
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span class="badge off" id="mode-badge">AUTOMÁTICO</span>
+                <span id="manual-remaining" style="display:none; color:#e65100; font-size:13px; font-weight:bold;"></span>
             </div>
         </div>
     </div>
 
-    <script>
-        // Función para actualizar datos
-        function updateData() {
-            fetch('/api/status')
-                .then(response => response.json())
-                .then(data => {
-                    // Actualizar temperaturas
-                    document.getElementById('boiler-water-temp').textContent = data.boiler_water_temp.toFixed(1);
-                    document.getElementById('heating-temp').textContent = data.heating_temp.toFixed(1);
-                    document.getElementById('burning-temp').textContent = data.burning_temp.toFixed(1);
-                    document.getElementById('ambient-temp').textContent = data.ambient_temp.toFixed(1);
+    <div class="card">
+        <h2>Temperaturas</h2>
+        <div class="temp-grid">
+            <div class="temp-cell"><div class="label">Ida caldera</div>     <div class="value" id="t-boiler-supply">--</div></div>
+            <div class="temp-cell"><div class="label">Retorno caldera</div> <div class="value" id="t-boiler-return">--</div></div>
+            <div class="temp-cell"><div class="label">Hierro caldera</div>  <div class="value" id="t-boiler-iron">--</div></div>
+            <div class="temp-cell"><div class="label">Ida suelo</div>       <div class="value" id="t-floor-supply">--</div></div>
+            <div class="temp-cell"><div class="label">Retorno suelo</div>   <div class="value" id="t-floor-return">--</div></div>
+            <div class="temp-cell"><div class="label">Ida mezcla</div>      <div class="value" id="t-mix-supply">--</div></div>
+            <div class="temp-cell"><div class="label">Ambiente abajo</div>  <div class="value" id="t-ambient-low">--</div></div>
+            <div class="temp-cell"><div class="label">Ambiente arriba</div> <div class="value" id="t-ambient-high">--</div></div>
+            <div class="temp-cell"><div class="label">Combustión (gases)</div><div class="value" id="t-burning">--</div></div>
+        </div>
+    </div>
 
-                    // Actualizar estados
-                    updateStatus('boiler-pump-status', data.boiler_pump);
-                    updateStatus('heating-pump-status', data.heating_pump);
-                    updateStatus('fans-status', data.fans);
-                    updateStatus('other-status', data.other);
+    <div class="card">
+        <h2>Actuadores</h2>
+        <div class="row"><span class="row-label">Bomba caldera</span>
+            <div style="display:flex; gap:8px; align-items:center;">
+                <span class="badge off" id="boiler-pump-status">--</span>
+                <span id="boiler-pump-pending" style="display:none; font-size:11px; color:#f57c00;">(pendiente)</span>
+            </div>
+        </div>
+        <div class="row"><span class="row-label">Bomba calefacción</span>
+            <div style="display:flex; gap:8px; align-items:center;">
+                <span class="badge off" id="heating-pump-status">--</span>
+                <span id="heating-pump-pending" style="display:none; font-size:11px; color:#f57c00;">(pendiente)</span>
+            </div>
+        </div>
+        <div class="row"><span class="row-label">Ventiladores</span>
+            <div style="display:flex; gap:8px; align-items:center;">
+                <span class="badge off" id="fans-status">--</span>
+                <span id="fans-pending" style="display:none; font-size:11px; color:#f57c00;">(pendiente)</span>
+            </div>
+        </div>
+        <div class="row"><span class="row-label">Relé auxiliar</span>
+            <div style="display:flex; gap:8px; align-items:center;">
+                <span class="badge off" id="other-status">--</span>
+                <span id="other-pending" style="display:none; font-size:11px; color:#f57c00;">(pendiente)</span>
+            </div>
+        </div>
+        <div class="row"><span class="row-label">Entrada de aire</span>
+            <span style="font-weight:bold;" id="air-intake-value">--</span>%
+        </div>
+    </div>
 
-                    // Actualizar control
-                    document.getElementById('target-temp').value = data.target_burning_temp;
-                    document.getElementById('target-temp-value').textContent = data.target_burning_temp;
-                    document.getElementById('air-intake-value').textContent = data.air_intake;
+</div>
 
-                    // Actualizar parámetros PID
-                    document.getElementById('pid-kp').textContent = data.pid.kp.toFixed(3);
-                    document.getElementById('pid-ki').textContent = data.pid.ki.toFixed(3);
-                    document.getElementById('pid-kd').textContent = data.pid.kd.toFixed(3);
+<!-- ── MANUAL ──────────────────────────────────────────────────── -->
+<div id="page-manual" class="page">
 
-                    // Actualizar estado del autoajuste
-                    const autotuneButton = document.getElementById('start-autotune');
-                    if (data.auto_tuning) {
-                        document.getElementById('autotune-status').textContent = 'EN PROCESO';
-                        document.getElementById('autotune-status').className = 'status-value on';
-                        autotuneButton.textContent = 'Cancelar Autoajuste';
-                    } else {
-                        document.getElementById('autotune-status').textContent = 'INACTIVO';
-                        document.getElementById('autotune-status').className = 'status-value off';
-                        autotuneButton.textContent = 'Iniciar Autoajuste';
-                    }
-                })
-                .catch(error => console.error('Error al obtener datos:', error));
+    <div class="card">
+        <h2>Control manual</h2>
 
-            // Actualizar logs
-            fetch('/api/logs')
-                .then(response => response.text())
-                .then(data => {
-                    document.getElementById('logs').textContent = data;
-                    // Auto-scroll al final
-                    const logsElement = document.getElementById('logs');
-                    logsElement.scrollTop = logsElement.scrollHeight;
-                })
-                .catch(error => console.error('Error al obtener logs:', error));
-        }
+        <div class="row">
+            <span class="row-label">Estado</span>
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span class="badge off" id="manual-badge">AUTOMÁTICO</span>
+                <span id="manual-remaining2" style="display:none; color:#e65100; font-size:13px; font-weight:bold;"></span>
+            </div>
+        </div>
 
-        // Función para actualizar estados visuales
-        function updateStatus(elementId, isOn) {
-            const element = document.getElementById(elementId);
-            element.textContent = isOn ? 'ON' : 'OFF';
-            element.className = 'status-value ' + (isOn ? 'on' : 'off');
-        }
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:14px;">
+            <button type="button" id="btn-manual-on" class="orange" onclick="setManualMode(true)">Activar modo manual</button>
+            <button type="button" id="btn-manual-off" class="danger" style="display:none;" onclick="setManualMode(false)">Volver a automático</button>
+            <span style="font-size:13px; color:#555;">
+                Timeout:&nbsp;<input type="number" id="manual-timeout-input" value="10" min="1" max="120"
+                    style="width:55px; padding:5px;">&nbsp;min
+            </span>
+        </div>
+    </div>
 
-        // Actualizar valor de temperatura objetivo al mover el slider
-        document.getElementById('target-temp').addEventListener('input', function() {
-            document.getElementById('target-temp-value').textContent = this.value;
-        });
+    <div id="manual-controls" style="display:none;">
+        <div class="alert alert-warn">
+            ⚠ Modo manual activo — los cambios son inmediatos (sin debounce). El sistema vuelve a automático al agotar el timeout.
+        </div>
 
-        // Guardar configuración cuando el usuario suelta el slider
-        document.getElementById('target-temp').addEventListener('change', function() {
-            const targetTemp = this.value;
-            saveConfiguration(targetTemp);
-        });
+        <div class="card">
+            <h2>Relés</h2>
+            <div class="act-grid">
+                <div class="act-cell">
+                    <span class="name">Bomba caldera</span>
+                    <div class="act-btns">
+                        <button type="button" onclick="sendActuator({boiler_pump:true})">ON</button>
+                        <button type="button" class="danger" onclick="sendActuator({boiler_pump:false})">OFF</button>
+                    </div>
+                </div>
+                <div class="act-cell">
+                    <span class="name">Bomba calefacción</span>
+                    <div class="act-btns">
+                        <button type="button" onclick="sendActuator({heating_pump:true})">ON</button>
+                        <button type="button" class="danger" onclick="sendActuator({heating_pump:false})">OFF</button>
+                    </div>
+                </div>
+                <div class="act-cell">
+                    <span class="name">Ventiladores</span>
+                    <div class="act-btns">
+                        <button type="button" onclick="sendActuator({fans:true})">ON</button>
+                        <button type="button" class="danger" onclick="sendActuator({fans:false})">OFF</button>
+                    </div>
+                </div>
+                <div class="act-cell">
+                    <span class="name">Relé auxiliar</span>
+                    <div class="act-btns">
+                        <button type="button" onclick="sendActuator({other:true})">ON</button>
+                        <button type="button" class="danger" onclick="sendActuator({other:false})">OFF</button>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-        // Función para guardar la configuración
-        function saveConfiguration(targetTemp) {
-            fetch('/api/settings', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    target_burning_temp: parseFloat(targetTemp)
-                }),
-            })
-            .then(response => response.json())
-            .then(data => {
-                console.log('Configuración guardada automáticamente');
-            })
-            .catch(error => {
-                console.error('Error al guardar configuración:', error);
-            });
-        }
+        <div class="card">
+            <h2>Servo entrada de aire</h2>
+            <div class="form-row">
+                <label>Posición</label>
+                <input type="range" id="manual-servo" min="0" max="100" value="0"
+                    oninput="document.getElementById('manual-servo-val').textContent = this.value">
+                <span class="val" id="manual-servo-val">0</span>%
+                <button type="button" class="blue"
+                    onclick="sendActuator({servo: parseInt(document.getElementById('manual-servo').value)})">
+                    Aplicar
+                </button>
+            </div>
+        </div>
+    </div>
 
-        // Iniciar/Cancelar autoajuste del PID
-        document.getElementById('start-autotune').addEventListener('click', function() {
-            const message = this.textContent.includes('Iniciar')
-                ? '¿Está seguro de que desea iniciar el autoajuste del PID? Este proceso puede tardar varios minutos y causará oscilaciones en la temperatura de combustión.'
-                : '¿Está seguro de que desea cancelar el autoajuste del PID en curso?';
+</div>
 
-            if (confirm(message)) {
-                fetch('/api/settings', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        autotune: true
-                    }),
-                })
-                .then(response => response.json())
-                .then(data => {
-                    // La actualización del estado se manejará en la función updateData
-                })
-                .catch(error => {
-                    console.error('Error al controlar el autoajuste:', error);
-                    alert('Error al controlar el autoajuste');
-                });
+<!-- ── CONFIG ──────────────────────────────────────────────────── -->
+<div id="page-config" class="page">
+
+    <div id="cfg-msg" style="display:none;"></div>
+
+    <div class="card">
+        <h2>Temperatura objetivo</h2>
+        <div class="form-row">
+            <label>Target combustión</label>
+            <input type="range" id="cfg-target-temp" min="30" max="150" step="1" value="85"
+                oninput="document.getElementById('cfg-target-val').textContent = this.value">
+            <span class="val" id="cfg-target-val">85</span> °C
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Umbrales de temperatura</h2>
+        <div class="form-row">
+            <label>Burning threshold (°C)</label>
+            <input type="number" id="cfg-burn-thresh" step="0.5">
+        </div>
+        <div class="form-row">
+            <label>Agua caliente (°C)</label>
+            <input type="number" id="cfg-water-thresh" step="0.5">
+        </div>
+        <div class="form-row">
+            <label>Agua crítica (°C)</label>
+            <input type="number" id="cfg-water-crit" step="0.5">
+        </div>
+        <div class="form-row">
+            <label>Hierro caldera threshold (°C)</label>
+            <input type="number" id="cfg-iron-thresh" step="0.5">
+        </div>
+        <div class="form-row">
+            <label>Delta suelo mín (°C)</label>
+            <input type="number" id="cfg-floor-delta" step="0.5">
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>PID</h2>
+        <div class="form-row">
+            <label>Kp</label>
+            <input type="number" id="cfg-kp" step="0.01">
+        </div>
+        <div class="form-row">
+            <label>Ki</label>
+            <input type="number" id="cfg-ki" step="0.001">
+        </div>
+        <div class="form-row">
+            <label>Kd</label>
+            <input type="number" id="cfg-kd" step="0.01">
+        </div>
+        <div class="form-row">
+            <label>Autoajuste PID</label>
+            <button type="button" id="btn-autotune" onclick="toggleAutotune()">Iniciar autoajuste</button>
+            <span id="autotune-status" style="font-size:13px; color:#666;"></span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Servo</h2>
+        <div class="form-row">
+            <label>Posición mínima</label>
+            <input type="number" id="cfg-servo-min" min="0" max="180">
+        </div>
+        <div class="form-row">
+            <label>Posición máxima</label>
+            <input type="number" id="cfg-servo-max" min="0" max="180">
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Tiempos</h2>
+        <div class="form-row">
+            <label>Debounce relés (min)</label>
+            <input type="number" id="cfg-debounce" min="0" max="60">
+        </div>
+        <div class="form-row">
+            <label>Timeout modo manual (min)</label>
+            <input type="number" id="cfg-manual-tmo" min="1" max="120">
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>MQTT / Home Assistant</h2>
+        <div class="form-row">
+            <label>Servidor</label>
+            <input type="text" id="cfg-mqtt-server" style="width:200px;">
+        </div>
+        <div class="form-row">
+            <label>Puerto</label>
+            <input type="number" id="cfg-mqtt-port">
+        </div>
+        <div class="form-row">
+            <label>Usuario</label>
+            <input type="text" id="cfg-mqtt-user" style="width:160px;">
+        </div>
+        <div class="form-row">
+            <label>Contraseña</label>
+            <input type="password" id="cfg-mqtt-pass" style="width:160px;" placeholder="(dejar vacío para no cambiar)">
+        </div>
+        <div class="form-row">
+            <label>Base topic</label>
+            <input type="text" id="cfg-mqtt-topic" style="width:160px;">
+        </div>
+    </div>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">
+        <button type="button" onclick="saveConfig()">Guardar cambios</button>
+        <button type="button" class="danger" onclick="if(confirm('¿Restaurar todos los valores por defecto?')) resetConfig()">
+            Restaurar valores por defecto
+        </button>
+    </div>
+
+</div>
+
+<!-- ── DEBUG ───────────────────────────────────────────────────── -->
+<div id="page-debug" class="page">
+
+    <div class="card">
+        <h2>Backup / Restore</h2>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button type="button" class="grey" onclick="exportConfig()">Exportar config</button>
+            <label style="cursor:pointer;">
+                <input type="file" id="import-file" accept=".json" style="display:none;" onchange="importConfig(this)">
+                <span style="background:#546e7a; color:#fff; padding:9px 16px; border-radius:4px; font-size:14px; cursor:pointer; display:inline-block;">
+                    Importar config
+                </span>
+            </label>
+            <span id="import-status" style="display:none; padding:5px 10px; border-radius:4px; font-size:13px;"></span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Display OLED</h2>
+        <div class="row">
+            <span class="row-label">Disponible</span>
+            <span class="badge off" id="disp-badge">--</span>
+        </div>
+        <div class="row">
+            <span class="row-label">Tipo configurado</span>
+            <span id="disp-type" style="font-family:monospace;">--</span>
+        </div>
+        <div class="row">
+            <span class="row-label">Pines (SDA / SCL)</span>
+            <span id="disp-pins" style="font-family:monospace;">--</span>
+        </div>
+        <div id="disp-tip" style="display:none;" class="alert alert-warn" style="margin-top:8px;"></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+            <button type="button" class="blue" onclick="displayTest()">Dibujar test</button>
+            <button type="button" class="grey" onclick="i2cScan()">Escanear I2C</button>
+        </div>
+        <div id="i2c-result" style="display:none; margin-top:10px; font-family:monospace; font-size:13px; background:#f5f7ff; border-radius:4px; padding:8px;"></div>
+    </div>
+
+    <div class="card">
+        <h2>MQTT / Home Assistant</h2>
+        <div class="row">
+            <span class="row-label">Estado</span>
+            <span class="badge off" id="mqtt-badge">--</span>
+        </div>
+        <div class="row">
+            <span class="row-label">Servidor</span>
+            <span id="mqtt-server-info" style="font-family:monospace; font-size:13px;">--</span>
+        </div>
+        <div class="row">
+            <span class="row-label">Mensajes publicados</span>
+            <span id="mqtt-pub-count">--</span>
+        </div>
+        <div class="row">
+            <span class="row-label">Último envío</span>
+            <span id="mqtt-last-pub">--</span>
+        </div>
+        <div class="row" id="mqtt-retry-row" style="display:none;">
+            <span class="row-label">Siguiente reintento</span>
+            <span id="mqtt-next-retry" style="color:#e65100; font-weight:bold;">--</span>
+        </div>
+        <div class="row" id="mqtt-err-row" style="display:none;">
+            <span class="row-label">Último error (rc)</span>
+            <span id="mqtt-last-err" style="color:#c62828; font-size:13px;">--</span>
+        </div>
+        <div style="margin-top:12px;">
+            <button type="button" class="blue" onclick="mqttRetry()">Forzar reconexión</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Termopar MAX6675</h2>
+        <div class="row">
+            <span class="row-label">Temperatura gases combustión</span>
+            <span style="font-weight:bold; font-size:18px;" id="tc-temp">--</span> °C
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Sensores Dallas 1-Wire</h2>
+        <div style="display:flex; gap:8px; align-items:center; margin-bottom:12px;">
+            <button type="button" class="blue" id="btn-scan" onclick="scanBus()">Re-escanear bus</button>
+            <span id="dallas-count" style="font-size:13px; color:#555;"></span>
+        </div>
+        <div style="overflow-x:auto;">
+            <table class="dallas-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Address</th>
+                        <th style="text-align:right;">Temp (°C)</th>
+                        <th>Rol actual</th>
+                        <th>Asignar</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="dallas-tbody">
+                    <tr><td colspan="6" style="padding:10px; color:#999;">Cargando...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Logs del sistema</h2>
+        <div class="logs" id="logs">Cargando...</div>
+    </div>
+
+</div>
+
+<script>
+    // ── Tab navigation ──────────────────────────────────────────────
+    function showPage(id, tabEl) {
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.getElementById('page-' + id).classList.add('active');
+        if (tabEl) tabEl.classList.add('active');
+    }
+
+    // ── System constants (loaded from backend) ──────────────────────
+    let SYS = { target_temp_min: 30, target_temp_max: 150, one_wire_pin: '?' };
+
+    fetch('/api/config')
+        .then(r => r.json())
+        .then(cfg => {
+            SYS = cfg;
+            const sl = document.getElementById('cfg-target-temp');
+            sl.min = cfg.target_temp_min;
+            sl.max = cfg.target_temp_max;
+            // Populate config fields
+            setField('cfg-target-temp',  cfg.target_burning_temp);
+            setField('cfg-target-val',   cfg.target_burning_temp, true);
+            setField('cfg-burn-thresh',  cfg.burning_temp_threshold);
+            setField('cfg-water-thresh', cfg.boiler_water_threshold);
+            setField('cfg-water-crit',   cfg.boiler_water_critical);
+            setField('cfg-iron-thresh',  cfg.boiler_iron_threshold);
+            setField('cfg-floor-delta',  cfg.floor_delta_threshold);
+            setField('cfg-kp',           cfg.pid_kp);
+            setField('cfg-ki',           cfg.pid_ki);
+            setField('cfg-kd',           cfg.pid_kd);
+            setField('cfg-servo-min',    cfg.servo_min);
+            setField('cfg-servo-max',    cfg.servo_max);
+            setField('cfg-debounce',     cfg.relay_debounce_min);
+            setField('cfg-manual-tmo',   cfg.manual_timeout_min);
+            setField('cfg-mqtt-server',  cfg.mqtt_server);
+            setField('cfg-mqtt-port',    cfg.mqtt_port);
+            setField('cfg-mqtt-user',    cfg.mqtt_user);
+            setField('cfg-mqtt-topic',   cfg.mqtt_base_topic);
+        })
+        .catch(() => {});
+
+    function setField(id, val, isText) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (isText) el.textContent = val;
+        else el.value = val;
+    }
+
+    // ── Dashboard updates ───────────────────────────────────────────
+    function setTemp(id, v) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (v != null) { el.textContent = v.toFixed(1); el.className = 'value'; }
+        else            { el.textContent = 'ERR';       el.className = 'value err'; }
+    }
+
+    function setBadge(id, on) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = on ? 'ON' : 'OFF';
+        el.className = 'badge ' + (on ? 'on' : 'off');
+    }
+
+    function applyManualModeUI(isManual, remainingSecs) {
+        // Dashboard badge
+        const mb = document.getElementById('mode-badge');
+        if (mb) { mb.textContent = isManual ? 'MANUAL' : 'AUTOMÁTICO'; mb.className = 'badge ' + (isManual ? 'on' : 'off'); }
+        // Manual page badge
+        const mb2 = document.getElementById('manual-badge');
+        if (mb2) { mb2.textContent = isManual ? 'MANUAL' : 'AUTOMÁTICO'; mb2.className = 'badge ' + (isManual ? 'on' : 'off'); }
+        // Buttons
+        const bon  = document.getElementById('btn-manual-on');
+        const boff = document.getElementById('btn-manual-off');
+        if (bon)  bon.style.display  = isManual ? 'none'         : 'inline-block';
+        if (boff) boff.style.display = isManual ? 'inline-block' : 'none';
+        // Controls section
+        const ctrl = document.getElementById('manual-controls');
+        if (ctrl) ctrl.style.display = isManual ? 'block' : 'none';
+        // Countdown (both pages)
+        ['manual-remaining', 'manual-remaining2'].forEach(rid => {
+            const el = document.getElementById(rid);
+            if (!el) return;
+            if (isManual && remainingSecs != null) {
+                const m = Math.floor(remainingSecs / 60);
+                const s = remainingSecs % 60;
+                el.textContent = m + ':' + String(s).padStart(2, '0') + ' restantes';
+                el.style.display = 'inline';
+            } else {
+                el.style.display = 'none';
             }
         });
+    }
 
-        // Actualizar datos cada 2 segundos
-        updateData();
-        setInterval(updateData, 2000);
-    </script>
+    function updateData() {
+        fetch('/api/status')
+            .then(r => r.json())
+            .then(data => {
+                // Temperatures
+                setTemp('t-boiler-supply', data.boiler_supply);
+                setTemp('t-boiler-return', data.boiler_return);
+                setTemp('t-boiler-iron',   data.boiler_iron);
+                setTemp('t-floor-supply',  data.floor_supply);
+                setTemp('t-floor-return',  data.floor_return);
+                setTemp('t-mix-supply',    data.mix_supply);
+                setTemp('t-ambient-low',   data.ambient_low);
+                setTemp('t-ambient-high',  data.ambient_high);
+                setTemp('t-burning',       data.burning_temp);
+
+                // Relay states + pending indicator
+                function updateRelay(base, state, desired) {
+                    setBadge(base + '-status', state);
+                    const p = document.getElementById(base + '-pending');
+                    if (p) p.style.display = (state !== desired) ? 'inline' : 'none';
+                }
+                updateRelay('boiler-pump',  data.boiler_pump,  data.boiler_pump_desired);
+                updateRelay('heating-pump', data.heating_pump, data.heating_pump_desired);
+                updateRelay('fans',         data.fans,         data.fans_desired);
+                updateRelay('other',        data.other,        data.other_desired);
+
+                // Air intake
+                setField('air-intake-value', data.air_intake, true);
+
+                // Config page sync (slider + PID status)
+                const sl = document.getElementById('cfg-target-temp');
+                if (sl && document.activeElement !== sl) {
+                    sl.value = data.target_burning_temp;
+                    setField('cfg-target-val', data.target_burning_temp, true);
+                }
+                const btn = document.getElementById('btn-autotune');
+                const at  = document.getElementById('autotune-status');
+                if (btn) btn.textContent = data.auto_tuning ? 'Cancelar autoajuste' : 'Iniciar autoajuste';
+                if (at)  at.textContent  = data.auto_tuning ? '⚙ EN PROCESO' : '';
+
+                // Manual mode — skip if a click is still in-flight
+                if (Date.now() > manualUiLockedUntil) {
+                    applyManualModeUI(data.manual_mode, data.manual_remaining_seconds);
+                }
+            })
+            .catch(() => {});
+
+        // Logs
+        fetch('/api/logs')
+            .then(r => r.text())
+            .then(t => {
+                const el = document.getElementById('logs');
+                if (el) { el.textContent = t; el.scrollTop = el.scrollHeight; }
+            })
+            .catch(() => {});
+    }
+
+    updateData();
+    setInterval(updateData, 2000);
+
+    // ── Manual mode ─────────────────────────────────────────────────
+    // Timestamp (ms) until which polls must not override the manual-mode UI.
+    // Set on every click so the 2s poll can't undo optimistic state mid-flight.
+    let manualUiLockedUntil = 0;
+
+    function setManualMode(active) {
+        const timeout = parseInt(document.getElementById('manual-timeout-input').value) || 10;
+        // Lock UI for 8s. On success we do NOT clear the lock early — a stale in-flight
+        // GET /api/status (started before the POST was processed) could arrive AFTER the
+        // POST resolves and carry manual_mode:false, reverting the UI. We let the lock
+        // expire naturally so only fresh polls (≥2s after the POST succeeded) update the UI.
+        manualUiLockedUntil = Date.now() + 8000;
+        applyManualModeUI(active, active ? timeout * 60 : null);
+        const body = active ? { active: true, timeout_minutes: timeout } : { active: false };
+        fetch('/api/manual', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        })
+        .then(r => r.json())
+        .then(d => {
+            if (!d.success) {
+                manualUiLockedUntil = 0;   // clear lock only on server-side failure
+                alert('Error al cambiar modo');
+                applyManualModeUI(!active, null);
+            }
+            // On success: leave the lock running — the next fresh poll will confirm the state
+        })
+        .catch(() => {
+            manualUiLockedUntil = 0;        // clear lock on network error
+            alert('Error de red');
+            applyManualModeUI(!active, null);
+        });
+    }
+
+    function sendActuator(cmd) {
+        fetch('/api/manual/actuators', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cmd)
+        })
+        .then(r => r.json())
+        .then(d => { if (!d.success) alert('Error: ' + (d.error || '?')); })
+        .catch(() => alert('Error de red'));
+    }
+
+    // ── Config page ─────────────────────────────────────────────────
+    function saveConfig() {
+        const pass = document.getElementById('cfg-mqtt-pass').value;
+        const body = {
+            target_burning_temp:    parseFloat(document.getElementById('cfg-target-temp').value),
+            burning_temp_threshold: parseFloat(document.getElementById('cfg-burn-thresh').value),
+            boiler_water_threshold: parseFloat(document.getElementById('cfg-water-thresh').value),
+            boiler_water_critical:  parseFloat(document.getElementById('cfg-water-crit').value),
+            boiler_iron_threshold:  parseFloat(document.getElementById('cfg-iron-thresh').value),
+            floor_delta_threshold:  parseFloat(document.getElementById('cfg-floor-delta').value),
+            pid_kp:                 parseFloat(document.getElementById('cfg-kp').value),
+            pid_ki:                 parseFloat(document.getElementById('cfg-ki').value),
+            pid_kd:                 parseFloat(document.getElementById('cfg-kd').value),
+            servo_min:              parseInt(document.getElementById('cfg-servo-min').value),
+            servo_max:              parseInt(document.getElementById('cfg-servo-max').value),
+            relay_debounce_min:     parseInt(document.getElementById('cfg-debounce').value),
+            manual_timeout_min:     parseInt(document.getElementById('cfg-manual-tmo').value),
+            mqtt_server:            document.getElementById('cfg-mqtt-server').value,
+            mqtt_port:              parseInt(document.getElementById('cfg-mqtt-port').value),
+            mqtt_user:              document.getElementById('cfg-mqtt-user').value,
+            mqtt_base_topic:        document.getElementById('cfg-mqtt-topic').value,
+        };
+        if (pass) body.mqtt_password = pass;
+        fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        })
+        .then(r => r.json())
+        .then(d => showCfgMsg(d.success ? 'Configuración guardada' : 'Error: ' + (d.error || '?'), d.success))
+        .catch(() => showCfgMsg('Error de red', false));
+    }
+
+    function resetConfig() {
+        fetch('/api/config/reset', { method: 'POST' })
+            .then(r => r.json())
+            .then(() => { showCfgMsg('Valores por defecto restaurados', true); return fetch('/api/config'); })
+            .then(r => r.json())
+            .then(cfg => {
+                setField('cfg-target-temp',  cfg.target_burning_temp); setField('cfg-target-val', cfg.target_burning_temp, true);
+                setField('cfg-burn-thresh',  cfg.burning_temp_threshold);
+                setField('cfg-water-thresh', cfg.boiler_water_threshold);
+                setField('cfg-water-crit',   cfg.boiler_water_critical);
+                setField('cfg-iron-thresh',  cfg.boiler_iron_threshold);
+                setField('cfg-floor-delta',  cfg.floor_delta_threshold);
+                setField('cfg-kp', cfg.pid_kp); setField('cfg-ki', cfg.pid_ki); setField('cfg-kd', cfg.pid_kd);
+                setField('cfg-servo-min',    cfg.servo_min);
+                setField('cfg-servo-max',    cfg.servo_max);
+                setField('cfg-debounce',     cfg.relay_debounce_min);
+                setField('cfg-manual-tmo',   cfg.manual_timeout_min);
+                setField('cfg-mqtt-server',  cfg.mqtt_server);
+                setField('cfg-mqtt-port',    cfg.mqtt_port);
+                setField('cfg-mqtt-user',    cfg.mqtt_user);
+                setField('cfg-mqtt-topic',   cfg.mqtt_base_topic);
+            })
+            .catch(() => showCfgMsg('Error de red', false));
+    }
+
+    function showCfgMsg(msg, ok) {
+        const el = document.getElementById('cfg-msg');
+        el.textContent = msg;
+        el.className = 'alert ' + (ok ? 'alert-ok' : 'alert-err');
+        el.style.display = 'block';
+        setTimeout(() => { el.style.display = 'none'; }, 3000);
+    }
+
+    function toggleAutotune() {
+        fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ autotune: true })
+        }).catch(() => {});
+    }
+
+    // ── Dallas sensors ───────────────────────────────────────────────
+    let ROLES = [{ value: '', label: '— Sin asignar —' }];
+    let dallasTableReady = false;
+    let latestAssignments = {};
+
+    fetch('/api/dallas/roles')
+        .then(r => r.json())
+        .then(d => {
+            ROLES = [{ value: '', label: '— Sin asignar —' }]
+                .concat(d.roles.map(r => ({ value: r.id, label: r.label })));
+            dallasTableReady = false;
+            updateDallas();
+        })
+        .catch(() => updateDallas());
+
+    function updateDallas() {
+        fetch('/api/dallas/sensors')
+            .then(r => r.json())
+            .then(data => {
+                const tcEl = document.getElementById('tc-temp');
+                if (tcEl) tcEl.textContent = data.thermocouple_temp != null ? data.thermocouple_temp.toFixed(1) : 'ERROR';
+                const cntEl = document.getElementById('dallas-count');
+                if (cntEl) cntEl.textContent = data.count + ' sensor' + (data.count !== 1 ? 'es' : '') + ' en el bus';
+
+                latestAssignments = data.assignments || {};
+                const tbody = document.getElementById('dallas-tbody');
+                if (!tbody) return;
+                const sensors = data.sensors;
+
+                if (sensors.length === 0) {
+                    dallasTableReady = false;
+                    tbody.innerHTML = '<tr><td colspan="6" style="padding:10px;color:#c62828;">No se detectaron sensores. Comprueba el cableado (pin ' + SYS.one_wire_pin + ', 4.7kΩ a 3.3V).</td></tr>';
+                    return;
+                }
+
+                const existingRows = tbody.querySelectorAll('tr[data-sensor-addr]');
+                const addrMatch = existingRows.length === sensors.length &&
+                    [...existingRows].every((row, i) => row.dataset.sensorAddr === sensors[i].address);
+
+                if (!dallasTableReady || !addrMatch) {
+                    tbody.innerHTML = sensors.map((s, i) => {
+                        const roleOpts = ROLES.map(r => {
+                            if (r.value !== '') {
+                                const takenBy = data.assignments[r.value] || '';
+                                if (takenBy !== '' && takenBy !== s.address) return '';
+                            }
+                            return `<option value="${r.value}"${s.role === r.value ? ' selected' : ''}>${r.label}</option>`;
+                        }).join('');
+                        return `<tr data-sensor-addr="${s.address}">
+                            <td>${i + 1}</td>
+                            <td style="font-family:monospace; font-size:12px;">${s.address}</td>
+                            <td id="dt-${i}" style="text-align:right; font-weight:bold;">--</td>
+                            <td id="dr-${i}" style="color:#555;">--</td>
+                            <td><select id="role-sel-${i}">${roleOpts}</select></td>
+                            <td>
+                                <button type="button" onclick="assignSensor('${s.address}', ${i})"
+                                    style="padding:4px 10px; font-size:12px;">Asignar</button>
+                            </td>
+                        </tr>`;
+                    }).join('');
+                    dallasTableReady = true;
+                }
+
+                sensors.forEach((s, i) => {
+                    const tc = document.getElementById('dt-' + i);
+                    const rc = document.getElementById('dr-' + i);
+                    if (tc) { tc.textContent = s.temperature != null ? s.temperature.toFixed(2) : 'ERROR'; tc.style.color = s.temperature != null ? '#333' : '#c62828'; }
+                    if (rc) rc.textContent = s.role || '—';
+                });
+            })
+            .catch(() => {});
+    }
+
+    function assignSensor(address, idx) {
+        const selectedRole = document.getElementById('role-sel-' + idx).value;
+        let postRole = selectedRole, postAddr = address;
+        if (selectedRole === '') {
+            postRole = Object.keys(latestAssignments).find(r => latestAssignments[r] === address) || '';
+            if (!postRole) return;
+            postAddr = '';
+        }
+        fetch('/api/dallas/assign', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: postRole, address: postAddr })
+        })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) { dallasTableReady = false; updateDallas(); }
+            else alert('Error: ' + (d.error || '?'));
+        })
+        .catch(() => alert('Error de red'));
+    }
+
+    function scanBus() {
+        const btn = document.getElementById('btn-scan');
+        btn.disabled = true; btn.textContent = 'Escaneando...';
+        fetch('/api/dallas/scan', { method: 'POST' })
+            .then(r => r.json())
+            .then(() => { btn.disabled = false; btn.textContent = 'Re-escanear bus'; dallasTableReady = false; updateDallas(); })
+            .catch(() => { btn.disabled = false; btn.textContent = 'Re-escanear bus'; });
+    }
+
+    updateDallas();
+    setInterval(updateDallas, 2000);
+
+    // ── Display debug ────────────────────────────────────────────────
+    function loadDisplayStatus() {
+        fetch('/api/display/status')
+            .then(r => r.json())
+            .then(d => {
+                const badge = document.getElementById('disp-badge');
+                if (badge) { badge.textContent = d.available ? 'SÍ' : 'NO'; badge.className = 'badge ' + (d.available ? 'on' : 'off'); }
+                setField('disp-type', d.type + ' (0x3C)', true);
+                setField('disp-pins', 'SDA=' + d.sda_pin + '  SCL=' + d.scl_pin, true);
+                const tip = document.getElementById('disp-tip');
+                if (tip) {
+                    if (!d.available) {
+                        tip.textContent = 'No responde en I2C — comprueba el cableado o usa Escanear I2C.';
+                        tip.style.display = 'block';
+                    } else if (d.type === 'SSD1306') {
+                        tip.textContent = 'Detectado pero no muestra nada → prueba SH1106: descomenta #define OLED_TYPE_SH1106 en config.h y flashea.';
+                        tip.style.display = 'block';
+                    } else {
+                        tip.style.display = 'none';
+                    }
+                }
+            })
+            .catch(() => {});
+    }
+
+    function displayTest() {
+        fetch('/api/display/test', { method: 'POST' })
+            .then(r => r.json())
+            .then(d => {
+                if (!d.available) alert('Display no disponible (available=false). Revisa cableado o tipo.');
+                else alert('Patrón de test enviado al display.');
+            })
+            .catch(() => alert('Error de red'));
+    }
+
+    function i2cScan() {
+        const el = document.getElementById('i2c-result');
+        if (el) { el.textContent = 'Escaneando...'; el.style.display = 'block'; }
+        fetch('/api/i2c/scan')
+            .then(r => r.json())
+            .then(d => {
+                if (!el) return;
+                if (d.count === 0) {
+                    el.textContent = 'Sin dispositivos en SDA=' + d.sda_pin + ' / SCL=' + d.scl_pin + '. Comprueba cableado.';
+                } else {
+                    el.textContent = d.count + ' dispositivo(s) encontrado(s): ' + d.devices.join(', ')
+                        + '\n(0x3C / 0x3D = OLED)';
+                }
+            })
+            .catch(() => { if (el) el.textContent = 'Error de red'; });
+    }
+
+    loadDisplayStatus();
+
+    // ── MQTT debug ──────────────────────────────────────────────────
+    const MQTT_RC = {
+        '-4': 'Timeout de conexión TCP',
+        '-3': 'Conexión perdida (keep-alive)',
+        '-2': 'Fallo TCP — sin ruta al host',
+        '-1': 'Desconectado',
+         '0': 'Conectado',
+         '1': 'Versión de protocolo incorrecta',
+         '2': 'Client ID rechazado por el broker',
+         '3': 'Broker no disponible',
+         '4': 'Credenciales incorrectas (usuario/contraseña)',
+         '5': 'No autorizado'
+    };
+
+    function updateMqttStatus() {
+        fetch('/api/mqtt/status')
+            .then(r => r.json())
+            .then(d => {
+                const badge = document.getElementById('mqtt-badge');
+                if (badge) {
+                    badge.textContent = d.connected ? 'CONECTADO' : 'DESCONECTADO';
+                    badge.className   = 'badge ' + (d.connected ? 'on' : 'off');
+                }
+                setField('mqtt-server-info', d.server + ':' + d.port, true);
+                setField('mqtt-pub-count', d.publish_count, true);
+
+                const ago = document.getElementById('mqtt-last-pub');
+                if (ago) ago.textContent = d.last_publish_ago_sec >= 0
+                    ? 'hace ' + d.last_publish_ago_sec + 's' : 'nunca';
+
+                const retryRow = document.getElementById('mqtt-retry-row');
+                const retryEl  = document.getElementById('mqtt-next-retry');
+                if (!d.connected && d.next_retry_sec > 0) {
+                    if (retryRow) retryRow.style.display = 'flex';
+                    if (retryEl) {
+                        const m = Math.floor(d.next_retry_sec / 60);
+                        const s = d.next_retry_sec % 60;
+                        retryEl.textContent = m > 0 ? m + 'min ' + s + 's' : s + 's';
+                    }
+                } else {
+                    if (retryRow) retryRow.style.display = 'none';
+                }
+
+                const errRow = document.getElementById('mqtt-err-row');
+                const errEl  = document.getElementById('mqtt-last-err');
+                if (!d.connected && d.fail_count > 0) {
+                    if (errRow) errRow.style.display = 'flex';
+                    if (errEl) {
+                        const desc = MQTT_RC[String(d.last_rc)] || 'Desconocido';
+                        errEl.textContent = 'rc=' + d.last_rc + ' — ' + desc + ' (fallo #' + d.fail_count + ')';
+                    }
+                } else {
+                    if (errRow) errRow.style.display = 'none';
+                }
+            })
+            .catch(() => {});
+    }
+
+    function mqttRetry() {
+        fetch('/api/mqtt/retry', { method: 'POST' })
+            .then(() => { setTimeout(updateMqttStatus, 1500); })
+            .catch(() => {});
+    }
+
+    updateMqttStatus();
+    setInterval(updateMqttStatus, 5000);
+
+    // ── Export / Import ──────────────────────────────────────────────
+    function exportConfig() {
+        fetch('/api/config/export')
+            .then(r => r.json())
+            .then(data => {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+                a.download = 'boiler-config.json';
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            })
+            .catch(e => alert('Error: ' + e));
+    }
+
+    function importConfig(input) {
+        const file = input.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = e => {
+            const statusEl = document.getElementById('import-status');
+            fetch('/api/config/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: e.target.result
+            })
+            .then(r => r.json())
+            .then(d => {
+                statusEl.textContent = d.success ? '✓ Importado' : '✗ ' + (d.error || 'Error');
+                statusEl.style.cssText = 'display:inline; padding:5px 10px; border-radius:4px; font-size:13px; background:' + (d.success ? '#e8f5e9; color:#2e7d32' : '#ffebee; color:#c62828');
+                input.value = '';
+                setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
+            })
+            .catch(() => {
+                statusEl.textContent = '✗ Error de red';
+                statusEl.style.cssText = 'display:inline; padding:5px 10px; border-radius:4px; font-size:13px; background:#ffebee; color:#c62828';
+            });
+        };
+        reader.readAsText(file);
+    }
+</script>
 </body>
 </html>
