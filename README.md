@@ -20,7 +20,7 @@ Cableado completo en [wiring_diagram.md](wiring_diagram.md).
 - **Bomba de caldera**: ON si hay combustión, el hierro de la caldera está caliente (> 50 °C) o el agua está caliente (> 40 °C).
 - **Bomba de calefacción**: ON si la bomba de caldera funciona, el agua está caliente y (ida caldera − retorno suelo) supera el delta mínimo.
 - **Ventiladores**: ON mientras hay combustión.
-- **Entrada de aire (PID)**: regula la temperatura que elijas en *Config → Objetivo del PID* (gases del termopar, ida de caldera, retorno, hierro, etc.) hacia un objetivo en °C. Solo actúa con combustión; sin ella el aire se cierra. El PID es propio ([pid_controller.h](include/pid_controller.h)): anti-windup, derivada sobre la medida y arranque sin saltos.
+- **Entrada de aire (PID)**: regula la temperatura que elijas en *Config → Objetivo del PID* hacia un objetivo en °C. Por defecto es la **ida de caldera (agua)**; los gases del termopar solo sirven para *detectar* la combustión, que es lo que activa el PID. Sin combustión el aire se cierra. El PID es propio ([pid_controller.h](include/pid_controller.h)): anti-windup, derivada sobre la medida y arranque sin saltos.
 - **Debounce de relés** (5 min por defecto) en automático, para no ciclar bombas.
 
 ### Seguridad

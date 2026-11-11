@@ -55,12 +55,14 @@
 #define PID_OUTPUT_STEP                50
 #define PID_LOOKBACK_SEC               30
 
-#define DEFAULT_TARGET_BURNING_TEMP    85.0
+#define DEFAULT_TARGET_BURNING_TEMP    50.0   // °C of the PID source (water by default)
 
 // Temperature the air-intake PID regulates (index in history.h channel order):
 // 0 boiler_supply, 1 boiler_return, 2 boiler_iron, 3 floor_supply, 4 floor_return,
 // 5 mix_supply, 6 ambient_low, 7 ambient_high, 8 burning (flue-gas thermocouple)
-#define DEFAULT_PID_SOURCE             8
+// Default: boiler water. The flue gas (thermocouple) only DETECTS combustion, which is
+// what enables the PID; it is not what the PID regulates.
+#define DEFAULT_PID_SOURCE             0
 
 #define LOG_BUFFER_SIZE                100
 

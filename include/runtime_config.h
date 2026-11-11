@@ -55,8 +55,10 @@ struct RuntimeSettings {
 
     bool load() {
         Preferences prefs;
+        bool migrate = false;
         if (prefs.begin(RUNTIME_PREFS_NS, true)) {
             if (prefs.isKey("v")) {
+                migrate = prefs.getUChar("v", 1) < 2;
                 burningTempThreshold     = prefs.getFloat("burn_thresh",  burningTempThreshold);
                 boilerWaterTempThreshold = prefs.getFloat("water_thresh", boilerWaterTempThreshold);
                 boilerWaterCriticalTemp  = prefs.getFloat("water_crit",   boilerWaterCriticalTemp);
@@ -76,6 +78,9 @@ struct RuntimeSettings {
                 if (prefs.isKey("mqtt_pass"))   prefs.getString("mqtt_pass",   mqttPassword,  sizeof(mqttPassword));
                 if (prefs.isKey("mqtt_topic"))  prefs.getString("mqtt_topic",  mqttBaseTopic, sizeof(mqttBaseTopic));
                 prefs.end();
+                // v2: the PID regulates the boiler water (index 0); gases only detect combustion.
+                // Applied once to settings saved by version 1 (the stored target is kept).
+                if (migrate) { pidSource = DEFAULT_PID_SOURCE; save(); }
                 return true;
             }
             prefs.end();
@@ -95,7 +100,7 @@ struct RuntimeSettings {
     bool save() const {
         Preferences prefs;
         if (!prefs.begin(RUNTIME_PREFS_NS, false)) return false;
-        prefs.putUChar("v", 1);
+        prefs.putUChar("v", 2);
         prefs.putFloat("burn_thresh",  burningTempThreshold);
         prefs.putFloat("water_thresh", boilerWaterTempThreshold);
         prefs.putFloat("water_crit",   boilerWaterCriticalTemp);

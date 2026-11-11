@@ -129,10 +129,19 @@ input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 
 /* ── Chart ────────────────────────────────────────────── */
 .chart-wrap { position: relative; width: 100%; }
 .chart-wrap canvas { width: 100%; display: block; touch-action: pan-y; }
-.tip { position: absolute; pointer-events: none; background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow);
-       border-radius: 10px; padding: 8px 10px; font-size: 12px; display: none; z-index: 5; white-space: nowrap; }
-.tip b { display: block; margin-bottom: 4px; }
-.tip i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.d-when small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.chart-layout { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 16px; align-items: start; }
+.detail { background: var(--card2); border-radius: 12px; padding: 12px 14px; font-size: 13px; position: sticky; top: 124px; }
+.d-when { font-weight: 700; font-size: 15px; margin-bottom: 8px; }
+.d-row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; }
+.d-row i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; }
+.d-row b { font-variant-numeric: tabular-nums; }
+.d-row b.on { color: var(--ok); } .d-row b.offv { color: var(--muted); font-weight: 400; }
+.d-sep { height: 1px; background: var(--line); margin: 8px 0; }
+.d-hint { color: var(--muted); font-size: 11px; margin-top: 8px; }
+.cap { font-size: 12px; color: var(--muted); margin-top: 6px; min-height: 17px; }
+@media (max-width: 760px) { .chart-layout { grid-template-columns: 1fr; } .detail { position: static; } }
 .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
 .lg { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line);
       background: var(--card2); font-size: 13px; cursor: pointer; user-select: none; }
@@ -216,9 +225,10 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
     </div>
 
     <div class="card">
-        <div class="chart-head"><h2 style="margin:0">Última hora <span class="sub">ida caldera (izq.) · gases (dcha.)</span></h2>
+        <div class="chart-head"><h2 style="margin:0">Última hora <span class="sub">ida caldera · gases</span></h2>
             <button type="button" class="btn grey sm" onclick="gotoPage('charts')">Ver gráficas →</button></div>
-        <div class="chart-wrap" id="mini-wrap"><canvas id="mini-chart"></canvas><div class="tip"></div></div>
+        <div class="chart-wrap" id="mini-wrap"><canvas id="mini-chart"></canvas></div>
+        <div class="cap" id="mini-cap"></div>
     </div>
 </section>
 
@@ -282,10 +292,21 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
             <h2 style="margin:0">Histórico de temperaturas</h2>
             <div class="ranges" id="ranges"></div>
         </div>
-        <div class="chart-wrap" id="big-wrap"><canvas id="big-chart"></canvas><div class="tip"></div></div>
-        <div class="legend" id="legend"></div>
+        <div class="toolbar">
+            <div class="ranges" id="presets"></div>
+            <span style="flex:1"></span>
+            <button type="button" class="btn grey sm" id="btn-zoom" style="display:none" onclick="bigChart.setView(null)">Restablecer zoom</button>
+            <button type="button" class="btn grey sm" onclick="downloadCsv()">Descargar CSV</button>
+        </div>
+        <div class="chart-layout">
+            <div style="min-width:0">
+                <div class="chart-wrap" id="big-wrap"><canvas id="big-chart"></canvas></div>
+                <div class="legend" id="legend"></div>
+            </div>
+            <aside class="detail" id="detail"></aside>
+        </div>
         <p style="font-size:12px;color:var(--muted);margin-top:8px">
-            1 muestra/min durante la última hora; después 1 muestra cada 5 min (media) hasta 24 h.
+            1 muestra/min durante la última hora; después 1 muestra cada 5 min (media) hasta 24 h. Las horas son las de tu navegador.
             Los datos viven en la RAM del ESP32: se pierden al reiniciar. Franjas inferiores: relés activos y modo manual.
         </p>
     </div>
@@ -297,7 +318,7 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
 
     <div class="card">
         <h2>Objetivo del PID (entrada de aire)</h2>
-        <div class="frow"><label>Temperatura a regular<small>El PID abre/cierra el aire para llevar ESTA temperatura al objetivo</small></label>
+        <div class="frow"><label>Temperatura a regular<small>El PID abre/cierra el aire para llevar ESTA temperatura al objetivo. Recomendado: «Ida caldera» (agua). Los gases solo sirven para detectar que hay fuego</small></label>
             <select id="cfg-pid-source" onchange="updatePidWarn()"></select></div>
         <div class="frow"><label>Objetivo<small>En °C, de la temperatura elegida arriba</small></label>
             <input type="range" id="cfg-target-temp" min="30" max="300" step="1" value="85" oninput="document.getElementById('cfg-target-val').textContent=this.value; updatePidWarn()">
@@ -488,7 +509,7 @@ function applyStatus(d) {
     setTemp('h-supply', d.boiler_supply); setTemp('h-burn', d.burning_temp);
     setTemp('m-supply', d.boiler_supply); setTemp('m-burn', d.burning_temp);
     setTemp('m-iron', d.boiler_iron);     setTemp('m-floor', d.floor_return);
-    { const si = d.pid_source != null ? d.pid_source : 8, name = PID_SOURCES[si] || '';
+    { const si = d.pid_source != null ? d.pid_source : 0, name = PID_SOURCES[si] || '';
       $('h-target-lbl').textContent = 'PID aire · ' + name.replace(' (termopar)', '');
       $('h-target').innerHTML = (d.pid_value != null ? fmt(d.pid_value, 1) : 'ERR') + ' → ' + fmt(d.target_burning_temp, 0) + '<small>°C</small>'; }
     $('h-air').innerHTML = d.air_intake + '<small>%</small>';
@@ -597,7 +618,7 @@ const SERIES = [
     { id: 'boiler_supply', label: 'Ida caldera',     color: '#e03131' },
     { id: 'boiler_return', label: 'Retorno caldera', color: '#f59f00' },
     { id: 'boiler_iron',   label: 'Hierro caldera',  color: '#9c36b5' },
-    { id: 'burning',       label: 'Gases (eje dcho.)', color: '#d6336c', axis: 'r' },
+    { id: 'burning',       label: 'Gases',           color: '#d6336c' },
     { id: 'floor_supply',  label: 'Ida suelo',       color: '#2f9e44' },
     { id: 'floor_return',  label: 'Retorno suelo',   color: '#82c91e' },
     { id: 'mix_supply',    label: 'Ida mezcla',      color: '#1c7ed6' },
@@ -631,7 +652,7 @@ function buildHist(d) {
         fs.forEach((v, i) => arr.push({ age: f.age + (f.n - 1 - i) * f.step, v }));
         if (ch === 'flags') arr.forEach(p => flags.push({ age: p.age, f: p.v })); else pts[ch] = arr.map(p => ({ age: p.age, v: p.v == null ? null : (ch === 'air' ? p.v : p.v / 10) }));
     }
-    return { pts, flags };
+    return { pts, flags, t0: Date.now() };   // t0: ages are relative to this instant
 }
 
 async function loadHistory() {
@@ -648,115 +669,233 @@ function fmtAge(s) {
     return 'hace ' + (s / 3600).toFixed(1).replace('.0', '') + ' h';
 }
 
+const TICK_STEPS = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];   // seconds
+const pad2 = n => String(n).padStart(2, '0');
+function clock(ms, withDate) {
+    const d = new Date(ms);
+    return (withDate ? pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + ' ' : '') + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+
 class Chart {
     constructor(canvas, wrap, opt) {
-        this.cv = canvas; this.wrap = wrap; this.tip = wrap.querySelector('.tip');
-        this.opt = opt; this.hover = null; this.geo = null;
-        const onMove = e => { const r = canvas.getBoundingClientRect(); const x = (e.touches ? e.touches[0].clientX : e.clientX) - r.left; this.hover = x; this.draw(); };
-        canvas.addEventListener('mousemove', onMove);
-        canvas.addEventListener('touchstart', onMove, { passive: true }); canvas.addEventListener('touchmove', onMove, { passive: true });
-        const leave = () => { this.hover = null; this.draw(); };
-        canvas.addEventListener('mouseleave', leave); canvas.addEventListener('touchend', leave);
+        this.cv = canvas; this.wrap = wrap; this.opt = opt;
+        this.selTs = null;      // selected moment, absolute ms (null = newest)
+        this.view = null;       // zoom window { a, b } in absolute ms (null = the chosen range)
+        this.geo = null; this.drag = null;
+        const xOf = e => { const r = canvas.getBoundingClientRect(); return (e.touches ? e.touches[0].clientX : e.clientX) - r.left; };
+        const inPlot = x => this.geo && x >= this.geo.L && x <= this.geo.L + this.geo.pw;
+        const select = x => { if (inPlot(x)) { this.selTs = this.geo.tsAt(x); this.draw(); } };
+        // Mouse: hover selects, drag zooms into a section, double-click resets. Touch: slide to select.
+        canvas.addEventListener('mousedown', e => { const x = xOf(e); if (opt.zoom && inPlot(x)) this.drag = { x0: x, x1: x }; });
+        canvas.addEventListener('mousemove', e => {
+            const x = xOf(e);
+            if (this.drag) { this.drag.x1 = Math.min(Math.max(x, this.geo.L), this.geo.L + this.geo.pw); this.draw(); } else select(x);
+        });
+        window.addEventListener('mouseup', () => {
+            const d = this.drag; if (!d) return; this.drag = null;
+            if (Math.abs(d.x1 - d.x0) > 10 && this.geo) {
+                const t1 = this.geo.tsAt(Math.min(d.x0, d.x1)), t2 = this.geo.tsAt(Math.max(d.x0, d.x1));
+                if (t2 - t1 >= 120000) { this.setView(t1, t2); return; }     // at least 2 minutes wide
+            }
+            select(d.x0); this.draw();
+        });
+        canvas.addEventListener('dblclick', () => this.setView(null));
+        canvas.addEventListener('touchstart', e => select(xOf(e)), { passive: true });
+        canvas.addEventListener('touchmove', e => select(xOf(e)), { passive: true });
+    }
+    setView(a, b) {
+        this.view = (a == null) ? null : { a, b };
+        if (this.opt.onZoom) this.opt.onZoom(!!this.view);
+        this.draw();
     }
     draw() {
         const cv = this.cv, o = this.opt;
         const dpr = window.devicePixelRatio || 1;
         const W = this.wrap.clientWidth; if (!W) return;
         const strips = o.strips ? STRIPS.length : 0;
-        const H = o.height + strips * 9 + (strips ? 8 : 0);
+        const cText = css('--muted'), cLine = css('--line');
+        const show = s => visible[s.id] !== false || o.forceAll;
+        // Stacked panels, each with its own y scale and a shared time axis (no dual axes)
+        const panels = o.panels.map(pd => ({ ...pd, series: pd.series.filter(show) })).filter(pd => pd.series.length);
+        const TITLE = 16, GAP = 12, AXIS = 20;
+        const bodyH = panels.reduce((acc, pd) => acc + TITLE + pd.height, 0) + Math.max(0, panels.length - 1) * GAP;
+        const H = Math.max(bodyH, 70) + AXIS + (strips ? strips * 9 + 8 : 0);
         cv.width = W * dpr; cv.height = H * dpr; cv.style.height = H + 'px';
         const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
-        const cText = css('--muted'), cLine = css('--line');
         g.font = '11px -apple-system, Segoe UI, sans-serif';
 
-        if (!HIST) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('Cargando…', W / 2, o.height / 2); return; }
-        const series = o.series.filter(s => visible[s.id] !== false || o.forceAll);
-        const range = o.range();
-        const L = 40, R = 10, T = 8, B = 20, ph = o.height - T - B;
+        if (!HIST) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('Cargando…', W / 2, 40); return; }
+        if (!panels.length) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('Selecciona alguna serie en la leyenda', W / 2, 40); this.geo = null; return; }
 
-        const hasR = series.some(x => x.axis === 'r');
-        const R2 = hasR ? 42 : R, pw2 = W - L - R2;
-        const scale = grp => {
+        const t0 = HIST.t0;
+        // visible window as ages (seconds before t0): from (older) .. to (newer)
+        const from = this.view ? (t0 - this.view.a) / 1000 : o.range();
+        const to   = this.view ? (t0 - this.view.b) / 1000 : 0;
+        const span = from - to;
+        const L = 40, R = 10, pw = W - L - R;
+        const X = age => L + pw * (1 - (age - to) / span);
+        const inV = p => p.age <= from && p.age >= to;
+
+        // selected moment (absolute time; default = right edge of the window)
+        const wanted = this.selTs != null ? (t0 - this.selTs) / 1000 : 0;
+        const selAge = (wanted >= to && wanted <= from) ? wanted : to;
+
+        // time ticks: real clock times (browser clock), aligned to round values
+        const stepMs = (TICK_STEPS.find(st => st >= span / 6) || 86400) * 1000;
+        const tA = t0 - from * 1000, tB = t0 - to * 1000, off = -new Date(tA).getTimezoneOffset() * 60000;
+        const ticks = [];
+        for (let tk = Math.ceil((tA - off) / stepMs) * stepMs + off; tk <= tB; tk += stepMs) {
+            const d = new Date(tk);
+            ticks.push({ x: X((t0 - tk) / 1000), label: clock(tk, d.getHours() === 0 && d.getMinutes() === 0 && span > 6 * 3600) });
+        }
+
+        const picks = [];
+        let y = 0, firstTop = null, bottom = 0, anyData = false;
+        panels.forEach(pd => {
+            const top = y + TITLE, ph = pd.height; if (firstTop == null) firstTop = top;
+            bottom = top + ph; y = bottom + GAP;
+            g.fillStyle = cText; g.textAlign = 'left'; g.font = 'bold 11px -apple-system, Segoe UI, sans-serif';
+            g.fillText(pd.title, L, top - 5); g.font = '11px -apple-system, Segoe UI, sans-serif';
+
             let lo = Infinity, hi = -Infinity, n = 0;
-            grp.forEach(sr => (HIST.pts[sr.id] || []).forEach(p => { if (p.v != null && p.age <= range) { lo = Math.min(lo, p.v); hi = Math.max(hi, p.v); n++; } }));
-            if (!n) return null;
+            pd.series.forEach(sr => (HIST.pts[sr.id] || []).forEach(p => { if (p.v != null && inV(p)) { lo = Math.min(lo, p.v); hi = Math.max(hi, p.v); n++; } }));
+            if (!n) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('sin datos en este intervalo', L + pw / 2, top + ph / 2); return; }
+            anyData = true;
             const pad = Math.max(2, (hi - lo) * 0.08); lo -= pad; hi += pad;
-            const st = niceStep(hi - lo, 5); return { lo: Math.floor(lo / st) * st, hi: Math.ceil(hi / st) * st, step: st };
-        };
-        const SL = scale(series.filter(x => x.axis !== 'r')), SR = scale(series.filter(x => x.axis === 'r'));
-        if (!SL && !SR) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('Aún sin datos — la primera muestra llega en 1 min', W / 2, o.height / 2); this.geo = null; return; }
-        const main = SL || SR;
-        const X = age => L + pw2 * (1 - age / range);
-        const mkY = sc => v => T + ph * (1 - (v - sc.lo) / (sc.hi - sc.lo));
-        const YL = mkY(main), YRf = SR ? mkY(SR) : YL;
-        const Ys = sr => (sr.axis === 'r' && SR) ? YRf : YL;
-        const lo = main.lo, hi = main.hi, step = main.step, Y = YL;
-        // grid + y labels
-        g.strokeStyle = cLine; g.fillStyle = cText; g.lineWidth = 1; g.textAlign = 'right';
-        for (let v = lo; v <= hi + 1e-9; v += step) { const y = Math.round(Y(v)) + .5; g.beginPath(); g.moveTo(L, y); g.lineTo(W - R2, y); g.stroke(); g.fillText(v % 1 ? v.toFixed(1) : v, L - 6, y + 4); }
-        if (SR && SL) { const rs = series.find(x => x.axis === 'r'); g.fillStyle = rs.color; g.textAlign = 'left'; for (let v = SR.lo; v <= SR.hi + 1e-9; v += SR.step) g.fillText(v % 1 ? v.toFixed(1) : v, W - R2 + 6, Math.round(YRf(v)) + 4); g.fillStyle = cText; g.textAlign = 'right'; }
-        // x labels
-        g.textAlign = 'center';
-        const xt = range <= 3600 ? 600 : range <= 10800 ? 1800 : range <= 21600 ? 3600 : range <= 43200 ? 7200 : 14400;
-        for (let a = 0; a <= range; a += xt) { const x = X(a); g.fillStyle = cText; g.fillText(a === 0 ? 'ahora' : (a >= 3600 ? (a / 3600) + ' h' : (a / 60) + ' min'), Math.min(Math.max(x, L + 14), W - R2 - 12), o.height - 4); }
+            const step = niceStep(hi - lo, 4); lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+            const Y = v => top + ph * (1 - (v - lo) / (hi - lo));
 
-        // lines
-        g.lineWidth = o.thin ? 1.6 : 2; g.lineJoin = 'round';
-        series.forEach(s => {
-            const arr = (HIST.pts[s.id] || []).filter(p => p.age <= range * 1.02);
-            g.strokeStyle = s.color; g.beginPath(); let pen = false;
-            arr.forEach(p => { if (p.v == null) { pen = false; return; } const x = X(p.age), y = Ys(s)(p.v); if (!pen) { g.moveTo(x, y); pen = true; } else g.lineTo(x, y); });
-            g.stroke();
+            // grid + y labels
+            g.lineWidth = 1; g.textAlign = 'right';
+            for (let v = lo; v <= hi + 1e-9; v += step) {
+                const yy = Math.round(Y(v)) + .5;
+                g.strokeStyle = cLine; g.beginPath(); g.moveTo(L, yy); g.lineTo(W - R, yy); g.stroke();
+                g.fillStyle = cText; g.fillText(v % 1 ? v.toFixed(1) : v, L - 6, yy + 4);
+            }
+            g.globalAlpha = .5; g.strokeStyle = cLine;
+            ticks.forEach(t => { g.beginPath(); g.moveTo(Math.round(t.x) + .5, top); g.lineTo(Math.round(t.x) + .5, top + ph); g.stroke(); });
+            g.globalAlpha = 1;
+
+            // series, clipped to the plot
+            g.save(); g.beginPath(); g.rect(L, top - 2, pw, ph + 4); g.clip();
+            g.lineWidth = o.thin ? 1.6 : 2; g.lineJoin = 'round';
+            pd.series.forEach(sr => {
+                g.strokeStyle = sr.color; g.beginPath(); let pen = false;
+                (HIST.pts[sr.id] || []).forEach(p => { if (p.v == null) { pen = false; return; } const x = X(p.age), yy = Y(p.v); if (!pen) { g.moveTo(x, yy); pen = true; } else g.lineTo(x, yy); });
+                g.stroke();
+            });
+            g.restore();
+
+            // selected moment: marker line + dots
+            g.strokeStyle = cText; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(X(selAge), top); g.lineTo(X(selAge), top + ph); g.stroke(); g.setLineDash([]);
+            const tol = Math.max(200, span / 80);
+            pd.series.forEach(sr => {
+                let best = null, bd = Infinity;
+                (HIST.pts[sr.id] || []).forEach(p => { const d = Math.abs(p.age - selAge); if (d < bd && p.v != null) { bd = d; best = p; } });
+                if (best && bd < tol) { g.fillStyle = sr.color; g.beginPath(); g.arc(X(best.age), Y(best.v), 3.5, 0, 7); g.fill(); picks.push({ s: sr, v: best.v }); }
+            });
         });
 
-        // relay strips
+        // time labels under the last panel
+        g.fillStyle = cText; g.textAlign = 'center';
+        ticks.forEach(t => g.fillText(t.label, Math.min(Math.max(t.x, L + 16), W - R - 16), bottom + 14));
+
+        // relay / manual strips
         if (strips) {
-            const y0 = o.height + 4;
+            const y0 = bottom + AXIS + 2;
             STRIPS.forEach((st, i) => {
-                const y = y0 + i * 9;
-                g.fillStyle = cLine; g.globalAlpha = .35; g.fillRect(L, y, pw2, 6); g.globalAlpha = 1;
-                g.fillStyle = st.color;
-                const fl = HIST.flags.filter(p => p.age <= range * 1.02);
-                fl.forEach((p, k) => {
+                const yy = y0 + i * 9;
+                g.fillStyle = cLine; g.globalAlpha = .35; g.fillRect(L, yy, pw, 6); g.globalAlpha = 1;
+                g.save(); g.beginPath(); g.rect(L, yy, pw, 6); g.clip(); g.fillStyle = st.color;
+                HIST.flags.forEach((p, k) => {
                     if (!(p.f & st.bit)) return;
-                    const nxt = fl[k + 1]; const x1 = X(p.age), x2 = nxt ? X(nxt.age) : X(0);
-                    g.fillRect(x1, y, Math.max(1.5, x2 - x1), 6);
+                    const nxt = HIST.flags[k + 1]; const x1 = X(p.age), x2 = nxt ? X(nxt.age) : X(0);
+                    g.fillRect(x1, yy, Math.max(1.5, x2 - x1), 6);
                 });
-                g.fillStyle = cText; g.textAlign = 'left'; g.font = '9px sans-serif'; g.fillText(st.label, L + 3, y + 5.5); g.font = '11px sans-serif';
+                g.restore();
+                g.fillStyle = cText; g.textAlign = 'left'; g.font = '9px sans-serif'; g.fillText(st.label, L + 3, yy + 5.5); g.font = '11px sans-serif';
             });
         }
 
-        // hover
-        this.geo = { L, R: R2, pw: pw2, range, X };
-        const tip = this.tip;
-        if (this.hover != null && this.hover >= L && this.hover <= W - R2 && o.tooltip !== false) {
-            const age = (1 - (this.hover - L) / pw2) * range;
-            g.strokeStyle = cText; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(this.hover, T); g.lineTo(this.hover, T + ph); g.stroke(); g.setLineDash([]);
-            let html = '<b>' + fmtAge(age) + '</b>';
-            series.forEach(s => {
-                const arr = HIST.pts[s.id] || []; let best = null, bd = Infinity;
-                arr.forEach(p => { const d = Math.abs(p.age - age); if (d < bd && p.v != null) { bd = d; best = p; } });
-                if (best && bd < Math.max(400, range / 60)) { g.fillStyle = s.color; g.beginPath(); g.arc(X(best.age), Ys(s)(best.v), 3.5, 0, 7); g.fill();
-                    html += '<div><i style="background:' + s.color + '"></i>' + s.label + ': <b style="display:inline">' + best.v.toFixed(1) + ' °C</b></div>'; }
-            });
-            tip.innerHTML = html; tip.style.display = 'block';
-            const tw = tip.offsetWidth; tip.style.left = Math.min(Math.max(this.hover + 12, 0), W - tw) + 'px'; tip.style.top = '6px';
-        } else tip.style.display = 'none';
+        // zoom rectangle while dragging
+        if (this.drag) { g.fillStyle = css('--accent'); g.globalAlpha = .18; g.fillRect(Math.min(this.drag.x0, this.drag.x1), firstTop, Math.abs(this.drag.x1 - this.drag.x0), bottom - firstTop); g.globalAlpha = 1; }
+
+        this.geo = { L, pw, tsAt: x => t0 - (to + (1 - (x - L) / pw) * span) * 1000 };
+        if (!anyData) { this.geo = null; }
+        if (o.onSelect) o.onSelect(selAge, picks, t0 - selAge * 1000);
     }
 }
 
-const miniSeries = SERIES.filter(s => s.id === 'boiler_supply' || s.id === 'burning');
-const miniChart = new Chart($('mini-chart'), $('mini-wrap'), { height: 170, series: miniSeries, range: () => 3600, forceAll: true, thin: true });
-const bigChart  = new Chart($('big-chart'),  $('big-wrap'),  { height: 320, series: SERIES, range: () => rangeSec, strips: true });
+// Flags (relays / manual) of the sample nearest to `age`
+function flagsAt(age) {
+    let best = null, bd = Infinity;
+    (HIST ? HIST.flags : []).forEach(p => { const d = Math.abs(p.age - age); if (d < bd) { bd = d; best = p; } });
+    return best ? best.f : null;
+}
+const shortLabel = s => s.label;
+const relAge = age => age < 90 ? 'ahora' : fmtAge(age);
+function renderDetail(age, picks, ts) {
+    const el = $('detail'); if (!el) return;
+    const f = flagsAt(age);
+    let h = '<div class="d-when">' + clock(ts, true) + '<small> · ' + relAge(age) + '</small></div>';
+    h += picks.length ? picks.map(p => `<div class="d-row"><span><i style="background:${p.s.color}"></i>${shortLabel(p.s)}</span><b>${p.v.toFixed(1)} °C</b></div>`).join('')
+                      : '<div class="empty" style="padding:10px 0">Sin datos en este instante</div>';
+    if (f != null) h += '<div class="d-sep"></div>' + STRIPS.map(st => `<div class="d-row"><span><i style="background:${st.color}"></i>${st.label}</span><b class="${f & st.bit ? 'on' : 'offv'}">${f & st.bit ? 'ON' : '—'}</b></div>`).join('');
+    h += '<div class="d-hint">Pasa el ratón o desliza el dedo: la selección se mantiene.<br>Arrastra sobre la gráfica para ampliar una sección; doble clic para restablecer.</div>';
+    el.innerHTML = h;
+}
+function renderMiniCaption(age, picks, ts) {
+    const el = $('mini-cap'); if (!el) return;
+    el.textContent = clock(ts) + ' · ' + relAge(age) + (picks.length ? ' · ' + picks.map(p => shortLabel(p.s) + ' ' + p.v.toFixed(1) + '°').join(' · ') : '');
+}
+
+const miniChart = new Chart($('mini-chart'), $('mini-wrap'), { panels: [
+    { title: 'Ida caldera y gases (°C)', series: SERIES.filter(x => x.id === 'boiler_supply' || x.id === 'burning'), height: 150 },
+], range: () => 3600, forceAll: true, thin: true, onSelect: renderMiniCaption });
+const bigChart  = new Chart($('big-chart'),  $('big-wrap'),  { panels: [
+    { title: 'Temperaturas (°C)', series: SERIES, height: 320 },
+], range: () => rangeSec, strips: true, zoom: true, onSelect: renderDetail, onZoom: z => { $('btn-zoom').style.display = z ? 'inline-block' : 'none'; } });
 function redrawCharts() { miniChart.draw(); bigChart.draw(); updateLegend(); }
 window.addEventListener('resize', redrawCharts);
 if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redrawCharts);
+
+const PRESETS = [
+    { label: 'Todo', ids: null },
+    { label: 'Agua caldera', ids: ['boiler_supply', 'boiler_return', 'boiler_iron'] },
+    { label: 'Suelo', ids: ['floor_supply', 'floor_return', 'mix_supply'] },
+    { label: 'Ambiente', ids: ['ambient_low', 'ambient_high'] },
+    { label: 'Gases', ids: ['burning'] },
+];
+
+// Download everything the ESP still remembers as CSV (local time, °C)
+function downloadCsv() {
+    if (!HIST || !HIST.pts.boiler_supply || !HIST.pts.boiler_supply.length) return toast('Aún no hay datos', true);
+    const ref = HIST.pts.boiler_supply, ids = SERIES.map(sr => sr.id);
+    const stamp = ms => { const d = new Date(ms); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()); };
+    let csv = 'fecha_hora,' + ids.join(',') + ',aire_pct,flags\n';
+    ref.forEach((p, i) => {
+        const cells = ids.map(id => { const q = HIST.pts[id] && HIST.pts[id][i]; return q && q.v != null ? q.v.toFixed(1) : ''; });
+        const air = HIST.pts.air && HIST.pts.air[i], fl = HIST.flags[i];
+        csv += stamp(HIST.t0 - p.age * 1000) + ',' + cells.join(',') + ',' + (air && air.v != null ? air.v : '') + ',' + (fl ? fl.f : '') + '\n';
+    });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = 'caldera-historico-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+}
 
 function buildChartControls() {
     $('ranges').innerHTML = RANGES.map(r => `<button type="button" data-s="${r.s}" class="${r.s === rangeSec ? 'active' : ''}">${r.l}</button>`).join('');
     $('ranges').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
         rangeSec = parseInt(b.dataset.s); try { localStorage.setItem('chartRange', rangeSec); } catch (e) {}
-        $('ranges').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b)); bigChart.draw();
+        $('ranges').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b)); bigChart.setView(null);
+    }));
+    $('presets').innerHTML = PRESETS.map((p, i) => `<button type="button" data-i="${i}">${p.label}</button>`).join('');
+    $('presets').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+        const ids = PRESETS[parseInt(b.dataset.i)].ids;
+        SERIES.forEach(sr => visible[sr.id] = ids == null || ids.includes(sr.id));
+        try { localStorage.setItem('chartVisible', JSON.stringify(visible)); } catch (e) {}
+        bigChart.draw(); updateLegend();
     }));
     $('legend').innerHTML = SERIES.map(s => `<span class="lg" data-id="${s.id}"><i style="background:${s.color}"></i>${s.label} <span class="now" id="lg-${s.id}"></span></span>`).join('');
     $('legend').querySelectorAll('.lg').forEach(el => el.addEventListener('click', () => {
@@ -778,7 +917,7 @@ buildChartControls();
 function fillConfig(cfg) {
     SYS = cfg;
     const sl = $('cfg-target-temp'); sl.min = cfg.target_temp_min; sl.max = cfg.target_temp_max;
-    setField('cfg-pid-source', cfg.pid_source != null ? cfg.pid_source : 8);
+    setField('cfg-pid-source', cfg.pid_source != null ? cfg.pid_source : 0);
     setField('cfg-target-temp', cfg.target_burning_temp); setField('cfg-target-val', cfg.target_burning_temp, true);
     setField('cfg-burn-thresh', cfg.burning_temp_threshold); setField('cfg-water-thresh', cfg.boiler_water_threshold);
     setField('cfg-water-crit', cfg.boiler_water_critical);   setField('cfg-iron-thresh', cfg.boiler_iron_threshold);
