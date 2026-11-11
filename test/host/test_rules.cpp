@@ -168,6 +168,28 @@ static void test_live_state() {
     RelayRule e; CHECK(!ruleRelayOn(e), "no groups: off");
 }
 
+static void test_preview_latches() {
+    printf("Preview: untouched conditions keep their latch, edited ones start fresh\n");
+    RuleSet cur = ruleDefaults(); float v[RULE_VAR_COUNT];
+    vars(v, 60, 30, 20, 25, 40, 40, 20, 22, 90, true);
+    for (int pass = 0; pass < 2; pass++) { ruleEvalRelay(cur.relay[RULE_BOILER_PUMP], v); v[RULE_VAR_BOILER_PUMP] = 1; ruleEvalRelay(cur.relay[RULE_HEATING_PUMP], v); }
+    CHECK(ruleRelayOn(cur.relay[RULE_HEATING_PUMP]), "setup: heating pump on in the running rules");
+    // inside the hysteresis band the running rule stays on thanks to its latch (supply 42, on above 45 / off below 40)
+    vars(v, 42, 30, 20, 25, 20, 40, 20, 22, 90, true); v[RULE_VAR_BOILER_PUMP] = 1;
+    ruleEvalRelay(cur.relay[RULE_HEATING_PUMP], v);
+    CHECK(ruleRelayOn(cur.relay[RULE_HEATING_PUMP]), "running rule stays on inside the band (latched)");
+    RuleSet same = ruleDefaults(); ruleSeedLatches(same, cur); ruleEvalRelay(same.relay[RULE_HEATING_PUMP], v);
+    CHECK(ruleRelayOn(same.relay[RULE_HEATING_PUMP]), "preview of an unchanged rule set gives the real result (latches copied)");
+    RuleSet fresh = ruleDefaults(); ruleEvalRelay(fresh.relay[RULE_HEATING_PUMP], v);
+    CHECK(!ruleRelayOn(fresh.relay[RULE_HEATING_PUMP]), "without seeding, the same rule would start off (inside the band)");
+    RuleSet edited = ruleDefaults(); edited.relay[RULE_HEATING_PUMP].g[0].c[1].value = 44;     // edit the water threshold
+    ruleSeedLatches(edited, cur); ruleEvalRelay(edited.relay[RULE_HEATING_PUMP], v);
+    CHECK(!edited.relay[RULE_HEATING_PUMP].g[0].c[1].state, "an edited condition starts fresh (42 is not above 44)");
+    CHECK(edited.relay[RULE_HEATING_PUMP].g[0].c[2].state, "...while the untouched ones keep theirs");
+    RuleSet shorter; ruleAddGroup(shorter.relay[RULE_FANS], { ruleCond(0, true, 1) });
+    ruleSeedLatches(shorter, cur); CHECK(true, "different shapes do not read out of bounds");
+}
+
 static void test_validate() {
     printf("Validation\n");
     RuleSet ok; ruleAddGroup(ok.relay[0], { ruleCond(0, true, 50, 2) });
@@ -349,7 +371,7 @@ static void test_json() {
 #endif
 
 int main() {
-    test_condition(); test_live_state(); test_missing_operator(); test_sensor_hold(); test_missing_and_diff(); test_groups(); test_validate();
+    test_condition(); test_live_state(); test_preview_latches(); test_missing_operator(); test_sensor_hold(); test_missing_and_diff(); test_groups(); test_validate();
     test_default_rules();
 #ifndef NO_JSON_TESTS
     test_json();

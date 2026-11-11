@@ -990,11 +990,12 @@ fetch('/api/config').then(r => r.json()).then(fillConfig).catch(() => {});
 /* ── Reglas de relés ───────────────────────────────────────────── */
 const RULE_RELAYS = [['boiler_pump', 'Bomba de caldera'], ['heating_pump', 'Bomba de calefacción'], ['fans', 'Ventiladores']];
 const RULE_VARS = PID_SOURCES.concat(['Bomba de caldera encendida', 'Hay combustión']);
-let LIVE = null, rulesDirty = false;
+let LIVE = null, PREVIEW = null, rulesDirty = false;
 let RULES = {}, RULE_MAX = { groups: 4, conds: 4 };
 const optList = (list, sel, none) => (none ? `<option value="-1"${sel < 0 ? ' selected' : ''}>${none}</option>` : '') + list.map((l, i) => `<option value="${i}"${i === sel ? ' selected' : ''}>${l}</option>`).join('');
 function renderRules(dirty) {
     rulesDirty = !!dirty;
+    if (rulesDirty) schedulePreview(); else { PREVIEW = null; previewSeq++; }
     $('rules-box').innerHTML = RULE_RELAYS.map(([key, label]) => {
         const groups = RULES[key] || [];
         const gh = groups.map((g, gi) => `<div class="rg" id="rg-${key}-${gi}" style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:8px 0">
@@ -1034,10 +1035,10 @@ function xText(c, x) {
     if (x == null) return 'sin lectura';
     return c.a >= 9 ? (x ? 'sí' : 'no') : x.toFixed(1) + (c.b != null ? ' °C de diferencia' : ' °C');
 }
-function liveMatches() {
-    if (!LIVE || !LIVE.state) return false;
+function liveMatches(L) {
+    if (!L || !L.state) return false;
     return RULE_RELAYS.every(([k]) => {
-        const g = RULES[k] || [], st = LIVE.state[k] && LIVE.state[k].groups;
+        const g = RULES[k] || [], st = L.state[k] && L.state[k].groups;
         return st && st.length === g.length && g.every((gg, i) => st[i].conds.length === gg.length);
     });
 }
@@ -1045,15 +1046,19 @@ function applyLive() {
     const note = $('rules-live'); if (!note) return;
     const clear = () => document.querySelectorAll('#rules-box .rc, #rules-box .rg').forEach(e => e.classList.remove('live-on', 'live-off'));
     const wipe = () => { clear(); document.querySelectorAll('#rules-box .rx, #rules-box .rwhy, #rules-box [id^="rb-"]').forEach(e => e.textContent = ''); };
-    if (rulesDirty) { wipe(); note.textContent = 'Cambios sin guardar: la vista en vivo está en pausa hasta que guardes.'; return; }
     if (!LIVE) { wipe(); note.textContent = 'Conectando con la caldera…'; return; }
+    if (rulesDirty && PREVIEW && PREVIEW.error) { wipe(); note.textContent = 'Reglas no válidas todavía: ' + PREVIEW.error; return; }
+    if (rulesDirty && !PREVIEW) { wipe(); note.textContent = 'Calculando vista previa…'; return; }
     if (LIVE.mode === 'manual' || LIVE.mode === 'emergency') {
         wipe(); note.textContent = LIVE.mode === 'manual' ? 'Modo manual: las reglas no se evalúan (mandas tú).' : 'EMERGENCIA: las reglas no mandan; bombas y ventiladores forzados y aire cerrado.'; return;
     }
-    if (LIVE.pending || !liveMatches()) { wipe(); note.textContent = 'Aplicando reglas…'; return; }
-    note.textContent = 'En vivo · verde = se cumple, rojo = no' + (LIVE.mode === 'fault' ? ' · sensor de ida averiado: modo seguro activo' : '') + ' · ' + new Date(LIVE.t).toLocaleTimeString('es-ES');
+    const L = rulesDirty ? { ...LIVE, state: PREVIEW.state } : LIVE;
+    if ((!rulesDirty && LIVE.pending) || !liveMatches(L)) { wipe(); note.textContent = rulesDirty ? 'Calculando vista previa…' : 'Aplicando reglas…'; return; }
+    note.textContent = rulesDirty
+        ? 'VISTA PREVIA de tus cambios sin guardar con las lecturas de ahora (aún no se aplican; las condiciones nuevas o editadas empiezan sin memoria de histéresis) · ' + new Date(PREVIEW.t).toLocaleTimeString('es-ES')
+        : 'En vivo · verde = se cumple, rojo = no' + (LIVE.mode === 'fault' ? ' · sensor de ida averiado: modo seguro activo' : '') + ' · ' + new Date(LIVE.t).toLocaleTimeString('es-ES');
     for (const [k] of RULE_RELAYS) {
-        const rs = LIVE.state[k], groups = RULES[k] || [], fails = [], won = [];
+        const rs = L.state[k], groups = RULES[k] || [], fails = [], won = [];
         groups.forEach((g, gi) => {
             const gs = rs.groups[gi];
             $('rg-' + k + '-' + gi).className = 'rg ' + (gs.on ? 'live-on' : 'live-off');
@@ -1076,7 +1081,19 @@ function applyLive() {
 function pollLive() {
     if (document.hidden || !$('rules-box') || !$('rules-box').offsetParent) return;
     fetch('/api/rules/state').then(r => r.json()).then(d => { LIVE = d; LIVE.t = Date.now(); applyLive(); }).catch(() => {});
+    if (rulesDirty) previewRules();
 }
+// Edited, unsaved rules evaluated by the board against the current readings (not applied)
+let previewTimer = null, previewSeq = 0;
+function previewRules() {
+    const seq = ++previewSeq;
+    api('/api/rules/preview', 'POST', RULES).then(r => {
+        if (seq !== previewSeq || !rulesDirty) return;      // an older answer, or the edits were saved meanwhile
+        PREVIEW = r.data && r.data.success ? { state: r.data.state, t: Date.now() } : { error: (r.data && r.data.error) || 'error', t: Date.now() };
+        applyLive();
+    }).catch(() => {});
+}
+function schedulePreview() { PREVIEW = null; clearTimeout(previewTimer); previewTimer = setTimeout(previewRules, 300); }
 setInterval(pollLive, 2000);
 function ruleKind(k, gi, ci, kind) {
     const c = RULES[k][gi][ci];

@@ -94,6 +94,19 @@ inline bool ruleRelayOn(const RelayRule& r) {
     return false;
 }
 
+// Preview support: copies the latch of every condition of `cur` that is identical (same position,
+// same definition) into `next`, so a preview of an edited rule set starts from the real state of
+// the conditions that were not touched. Edited conditions start fresh.
+inline void ruleSeedLatches(RuleSet& next, const RuleSet& cur) {
+    for (int r = 0; r < RULE_RELAYS; r++)
+        for (uint8_t gi = 0; gi < next.relay[r].n && gi < cur.relay[r].n; gi++)
+            for (uint8_t ci = 0; ci < next.relay[r].g[gi].n && ci < cur.relay[r].g[gi].n; ci++) {
+                RuleCond& n = next.relay[r].g[gi].c[ci];
+                const RuleCond& c = cur.relay[r].g[gi].c[ci];
+                if (n.a == c.a && n.b == c.b && n.op == c.op && n.value == c.value && n.hyst == c.hyst) n.state = c.state;
+            }
+}
+
 // nullptr when coherent, otherwise a message for the user
 inline const char* ruleValidate(const RuleSet& rs) {
     for (int r = 0; r < RULE_RELAYS; r++) {

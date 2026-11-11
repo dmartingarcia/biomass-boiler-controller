@@ -1209,6 +1209,43 @@ void setup() {
         request->send(response);
     });
 
+    // POST /api/rules/preview — evaluate an edited rule set against the CURRENT readings without
+    // saving or applying it. Conditions that were not edited keep their real latch.
+    webServer.on("/api/rules/preview", HTTP_POST,
+        [](AsyncWebServerRequest *request) {},
+        nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            char* body = collectBody(request, data, len, index, total, 4096);
+            if (!body) return;
+            DynamicJsonDocument in(6144);
+            if (deserializeJson(in, body) || !in.is<JsonObject>()) {
+                request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+                return;
+            }
+            RuleSet next = rules;
+            if (const char* err = rulesFromJson(in.as<JsonObjectConst>(), next)) {
+                request->send(400, "application/json", String("{\"success\":false,\"error\":\"") + err + "\"}");
+                return;
+            }
+            ruleSeedLatches(next, rules);
+            float v[RULE_VAR_COUNT];                      // local copy: never touch the loop's ruleVars
+            for (int i = 0; i < RULE_TEMP_VARS; i++) v[i] = sourceTemp(i);
+            v[RULE_VAR_BOILER_PUMP] = 0;
+            v[RULE_VAR_BURNING]     = isBurning ? 1 : 0;
+            bool bp = ruleEvalRelay(next.relay[RULE_BOILER_PUMP], v);
+            v[RULE_VAR_BOILER_PUMP] = bp ? 1 : 0;
+            ruleEvalRelay(next.relay[RULE_HEATING_PUMP], v);
+            ruleEvalRelay(next.relay[RULE_FANS], v);
+            AsyncResponseStream *response = request->beginResponseStream("application/json");
+            DynamicJsonDocument doc(6144);
+            JsonObject root = doc.to<JsonObject>();
+            root["success"] = true;
+            rulesStateToJson(next, root.createNestedObject("state"));
+            serializeJson(doc, *response);
+            request->send(response);
+        }
+    );
+
     // GET /api/rules — current relay rules + variable names
     webServer.on("/api/rules", HTTP_GET, [](AsyncWebServerRequest *request) {
         AsyncResponseStream *response = request->beginResponseStream("application/json");

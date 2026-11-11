@@ -67,6 +67,7 @@ test/host/run.sh
 | `POST /api/manual` `{active}` | activa/desactiva el modo manual |
 | `POST /api/manual/actuators` | relés y servo (solo en manual) |
 | `POST /api/selftest` · `GET /api/selftest` | lanza / consulta el autotest (solo en manual) |
+| `POST /api/rules/preview` | evalúa unas reglas editadas con las lecturas de ahora, sin guardarlas ni aplicarlas |
 | `GET /api/rules/state` | resultado en vivo de las reglas: relé, grupos y condiciones (cumple o no, y el valor comparado) |
 | `GET/POST /api/rules` | reglas de los relés (`{"reset":true}` restaura las de fábrica) |
 | `GET/POST /api/config` | ajustes (con validación; rechaza valores incoherentes) |
