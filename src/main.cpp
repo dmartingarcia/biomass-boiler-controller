@@ -19,6 +19,8 @@
 #include "runtime_config.h"
 #include "history.h"
 #include "relay_config.h"
+#include "rules_io.h"
+#include "sensor_hold.h"
 
 // Creación del servidor web directamente en main.cpp
 AsyncWebServer webServer(WEB_SERVER_PORT);
@@ -54,6 +56,11 @@ unsigned long lastControlUpdate = 0;
 
 // System state variables
 bool killSwitchActive = false;  // Killswitch state (emergency mode)
+RuleSet rules;                          // active relay rules (only touched from loop())
+RuleSet pendingRules;                   // set by the web API, applied by loop()
+volatile bool rulesPending = false;
+volatile bool rulesResetPending = false;
+float ruleVars[RULE_VAR_COUNT];
 bool isBurning        = false;  // cached each sensor read — used by PID block
 
 // Manual override mode — stays active until the user switches back to automatic
@@ -130,6 +137,24 @@ float* const tempByChannel[HISTORY_CHANNELS] = {
     &boilerSupplyTemp, &boilerReturnTemp, &boilerIronTemp, &floorSupplyTemp, &floorReturnTemp,
     &mixSupplyTemp,    &ambientLowTemp,   &ambientHighTemp, &burningTemp
 };
+
+// Temperature of a channel for threshold decisions: NAN when missing or implausible
+// (channels 0-7 are Dallas probes, 8 is the flue-gas thermocouple)
+// A failing sensor keeps its last good value for up to SENSOR_HOLD_MS (see sensor_hold.h)
+SensorHold sensorHold[HISTORY_CHANNELS];
+float heldTemp[HISTORY_CHANNELS] = { NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN };
+void updateHeldTemps() {
+    unsigned long now = millis();
+    for (int i = 0; i < HISTORY_CHANNELS; i++) {
+        float raw = *tempByChannel[i];
+        bool ok = !isnan(raw) && (i >= 8 || TemperatureSensors::isValidDallasTemp(raw));
+        heldTemp[i] = sensorHold[i].update(raw, ok, now);
+    }
+}
+float sourceTemp(int src) {
+    if (src < 0 || src >= HISTORY_CHANNELS) return NAN;
+    return heldTemp[src];
+}
 
 // Current value of the temperature the PID regulates (NAN if that sensor is missing)
 float pidProcessValue() {
@@ -209,8 +234,19 @@ struct SelfTestState {
     int           dallasCount = 0;
     int           dallasValid = 0;
     int           relaysPulsed = 0;
+    // Report details (snapshot taken at the end of the run)
+    float         temps[HISTORY_CHANNELS];
+    bool          assigned[HISTORY_CHANNELS];
+    bool          relayWasOn[RELAY_ROLE_COUNT];
+    int           relayPin[RELAY_ROLE_COUNT];
+    unsigned long durationMs = 0;
+    int           rssi = 0;
+    bool          wifiOk = false, mqttOk = false;
+    uint32_t      heapFree = 0, uptimeSec = 0;
 } selfTest;
 volatile bool selfTestRequested = false;
+
+void readSensors();   // defined below
 
 void runSelfTest() {
     selfTest = SelfTestState();
@@ -220,6 +256,7 @@ void runSelfTest() {
     if (!manualMode)    { selfTest.error = true; selfTest.errorMsg = "Requiere modo manual"; selfTest.running = false; selfTest.done = true; return; }
     if (killSwitchActive) { selfTest.error = true; selfTest.errorMsg = "Temperatura crítica";  selfTest.running = false; selfTest.done = true; return; }
 
+    unsigned long startedAt = millis();
     logBuffer.log("Self-test started (from UI)");
     selfTest.displayOk = display.isAvailable();
     selfTest.step = "pantalla";
@@ -232,6 +269,8 @@ void runSelfTest() {
         selfTest.step = RelayConfig::roleLabel(r);
         snprintf(buf, sizeof(buf), "%s (GPIO %d)", RelayConfig::roleId(r), rl->getPin());
         bool prev = rl->getState();
+        selfTest.relayWasOn[r] = prev;
+        selfTest.relayPin[r]   = rl->getPin();
         display.showMessage("Relay Test", buf, prev ? "-> OFF (1 s)" : "-> ON (1 s)");
         rl->forceState(!prev);
         delay(1000);
@@ -264,6 +303,23 @@ void runSelfTest() {
 
     display.showMessage("Self-Test", "DONE");
     delay(500);
+
+    // Snapshot for the report: fresh readings of every channel, what is assigned, connectivity
+    readSensors();
+    updateHeldTemps();
+    const char* const assignedAddr[8] = { sensorConfig.boilerSupplyAddr, sensorConfig.boilerReturnAddr, sensorConfig.boilerIronAddr,
+        sensorConfig.floorSupplyAddr, sensorConfig.floorReturnAddr, sensorConfig.mixSupplyAddr,
+        sensorConfig.ambientLowAddr, sensorConfig.ambientHighAddr };
+    for (int i = 0; i < HISTORY_CHANNELS; i++) {
+        selfTest.temps[i]    = *tempByChannel[i];
+        selfTest.assigned[i] = i >= 8 || assignedAddr[i][0] != '\0';
+    }
+    selfTest.wifiOk    = networkManager.isConnected();
+    selfTest.rssi      = selfTest.wifiOk ? WiFi.RSSI() : 0;
+    selfTest.mqttOk    = homeAssistant.getStatus().connected;
+    selfTest.heapFree  = ESP.getFreeHeap();
+    selfTest.uptimeSec = millis() / 1000;
+    selfTest.durationMs = millis() - startedAt;
 
     logBuffer.log(String("Self-test done: thermocouple ") + (selfTest.tcOk ? "OK" : "ERROR") +
                   ", Dallas " + String(selfTest.dallasValid) + "/" + String(n));
@@ -342,45 +398,45 @@ void handleCriticalTemperature() {
     }
 }
 
-void handleNormalOperation(bool isBurning, bool isBoilerWaterHot) {
+// Variables the relay rules can look at: the 9 temperatures + "boiler pump on" + "burning"
+void fillRuleVars(bool burning) {
+    for (int i = 0; i < RULE_TEMP_VARS; i++) ruleVars[i] = sourceTemp(i);
+    ruleVars[RULE_VAR_BOILER_PUMP] = 0;
+    ruleVars[RULE_VAR_BURNING]     = burning ? 1 : 0;
+}
+
+void handleNormalOperation(bool isBurning) {
     if (killSwitchActive) {
         logBuffer.log("Water temperature normalized: " + String(boilerSupplyTemp) + "°C - Normal mode restored");
         killSwitchActive = false;
     }
 
-    // Boiler pump: ON while burning, while boiler iron body is warm, or while water is hot
-    // — keeps extracting residual heat from the boiler mass after combustion ends
-    bool ironWarm = TemperatureSensors::isValidDallasTemp(boilerIronTemp)
-                    && boilerIronTemp > systemSettings.boilerIronThreshold;
-    bool wantBoilerPump = isBurning || ironWarm || isBoilerWaterHot;
+    // Relay behaviour comes from the editable rules (Config → Reglas de relés).
+    // The boiler pump is evaluated first: the heating pump rule can depend on it.
+    fillRuleVars(isBurning);
+    bool wantBoilerPump = ruleEvalRelay(rules.relay[RULE_BOILER_PUMP], ruleVars);
+    ruleVars[RULE_VAR_BOILER_PUMP] = wantBoilerPump ? 1 : 0;
+    bool wantHeatingPump = ruleEvalRelay(rules.relay[RULE_HEATING_PUMP], ruleVars);
+    bool wantFans        = ruleEvalRelay(rules.relay[RULE_FANS], ruleVars);
 
-    // Heating pump: ON only when boiler pump is running AND water is hot
-    //               AND (ida_caldera − retorno_suelo) > threshold
-    //               — no differential sensor → fallback to water-hot check only
-    bool floorReturnValid = TemperatureSensors::isValidDallasTemp(floorReturnTemp);
-    bool deltaOk = !floorReturnValid
-                   || (boilerSupplyTemp - floorReturnTemp) > systemSettings.floorDeltaThreshold;
-    bool wantHeatingPump = wantBoilerPump && isBoilerWaterHot && deltaOk;
-
-    // Fans: ON while burning
     boilerPumpRelay.setState(wantBoilerPump);
     heatingPumpRelay.setState(wantHeatingPump);
-    fansRelay.setState(isBurning);
+    fansRelay.setState(wantFans);
 }
 
-// Boiler-supply sensor unreadable → water temperature unknown. While there is a heat
-// source (combustion or hot iron body): pumps forced ON to carry heat away and the air
-// damper closed so the fire dies down. With no heat source, behave normally.
+// Boiler-supply sensor unreadable → water temperature unknown. While the boiler pump rule
+// says there is a heat source (combustion, hot iron...): pumps forced ON to carry heat away
+// and the air damper closed so the fire dies down. Otherwise behave normally.
 void handleSensorFault(bool isBurning) {
-    bool ironWarm = TemperatureSensors::isValidDallasTemp(boilerIronTemp)
-                    && boilerIronTemp > systemSettings.boilerIronThreshold;
-    if (isBurning || ironWarm) {
+    fillRuleVars(isBurning);
+    if (ruleEvalRelay(rules.relay[RULE_BOILER_PUMP], ruleVars)) {
         boilerPumpRelay.forceState(true);
         heatingPumpRelay.forceState(true);
-        fansRelay.setState(isBurning);
+        ruleVars[RULE_VAR_BOILER_PUMP] = 1;
+        fansRelay.setState(ruleEvalRelay(rules.relay[RULE_FANS], ruleVars));
         airIntake.setPosition(0);
     } else {
-        handleNormalOperation(false, false);
+        handleNormalOperation(isBurning);
         airIntake.setPosition(0);
     }
 }
@@ -579,6 +635,11 @@ void setup() {
     // Load runtime settings (must be after LittleFS init)
     if (systemSettings.load()) {
         logBuffer.log("Runtime settings loaded from LittleFS");
+    }
+
+    // Relay rules: the saved ones, or the built-in defaults (see ruleDefaults in rules.h)
+    if (!rulesLoad(rules)) {
+        rules = ruleDefaults();
     }
 
     // Load Dallas sensor role assignments
@@ -995,6 +1056,11 @@ void setup() {
         s["relay_debounce_min"]     = systemSettings.relayDebounceMin;
         s["boiler_iron_threshold"]  = systemSettings.boilerIronThreshold;
         s["floor_delta_threshold"]  = systemSettings.floorDeltaThreshold;
+        s["fan_on_temp"]            = systemSettings.fanOnTemp;
+        s["burn_source"] = systemSettings.burnSource;
+        s["fan_source"] = systemSettings.fanSource;
+        s["iron_source"] = systemSettings.ironSource;
+        s["water_source"] = systemSettings.waterSource;
         s["mqtt_server"]            = systemSettings.mqttServer;
         s["mqtt_port"]              = systemSettings.mqttPort;
         s["mqtt_user"]              = systemSettings.mqttUser;
@@ -1059,6 +1125,11 @@ void setup() {
                 }
                 if (s.containsKey("boiler_iron_threshold")) systemSettings.boilerIronThreshold = s["boiler_iron_threshold"];
                 if (s.containsKey("floor_delta_threshold"))  systemSettings.floorDeltaThreshold = s["floor_delta_threshold"];
+                if (s.containsKey("fan_on_temp"))            systemSettings.fanOnTemp           = s["fan_on_temp"];
+                if (s.containsKey("burn_source")) { int v = s["burn_source"] | -1; if (v >= 0 && v < HISTORY_CHANNELS) systemSettings.burnSource = v; }
+                if (s.containsKey("fan_source")) { int v = s["fan_source"] | -1; if (v >= 0 && v < HISTORY_CHANNELS) systemSettings.fanSource = v; }
+                if (s.containsKey("iron_source")) { int v = s["iron_source"] | -1; if (v >= 0 && v < HISTORY_CHANNELS) systemSettings.ironSource = v; }
+                if (s.containsKey("water_source")) { int v = s["water_source"] | -1; if (v >= 0 && v < HISTORY_CHANNELS) systemSettings.waterSource = v; }
                 if (s.containsKey("mqtt_server"))
                     strlcpy(systemSettings.mqttServer,    s["mqtt_server"]    | "", sizeof(systemSettings.mqttServer));
                 if (s.containsKey("mqtt_port"))
@@ -1121,9 +1192,57 @@ void setup() {
         }
     );
 
+    // GET /api/rules — current relay rules + variable names
+    webServer.on("/api/rules", HTTP_GET, [](AsyncWebServerRequest *request) {
+        AsyncResponseStream *response = request->beginResponseStream("application/json");
+        DynamicJsonDocument doc(4096);
+        JsonObject root = doc.to<JsonObject>();
+        rulesToJson(rulesPending ? pendingRules : rules, root.createNestedObject("rules"));
+        root["max_groups"] = RULE_MAX_GROUPS;
+        root["max_conds"]  = RULE_MAX_CONDS;
+        serializeJson(doc, *response);
+        request->send(response);
+    });
+
+    // POST /api/rules — replace the rules of the relays present in the body (validated, persisted)
+    // POST /api/rules {"reset":true} — back to defaults
+    webServer.on("/api/rules", HTTP_POST,
+        [](AsyncWebServerRequest *request) {},
+        nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            char* body = collectBody(request, data, len, index, total, 4096);
+            if (!body) return;
+            DynamicJsonDocument doc(6144);
+            if (deserializeJson(doc, body) || !doc.is<JsonObject>()) {
+                request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+                return;
+            }
+            if (doc["reset"] | false) {
+                rulesClearSaved();
+                rulesResetPending = true;
+                request->send(200, "application/json", "{\"success\":true}");
+                return;
+            }
+            RuleSet next = rulesPending ? pendingRules : rules;
+            if (const char* err = rulesFromJson(doc.as<JsonObjectConst>(), next)) {
+                request->send(400, "application/json", String("{\"success\":false,\"error\":\"") + err + "\"}");
+                logBuffer.log(String("Rules rejected: ") + err);
+                return;
+            }
+            bool saved = rulesSave(next);
+            pendingRules = next;
+            rulesPending = true;
+            request->send(200, "application/json", saved
+                ? "{\"success\":true}"
+                : "{\"success\":true,\"warning\":\"Could not persist to flash\"}");
+        }
+    );
+
     // POST /api/config/reset — restore compile-time defaults and clear NVS namespaces
     webServer.on("/api/config/reset", HTTP_POST, [](AsyncWebServerRequest *request) {
         systemSettings.resetToDefaults(); // clears NVS + reinitializes struct to compile-time defaults
+        rulesClearSaved();
+        rulesResetPending = true;
 
         // Re-apply defaults to running components
         sensors.setBurningThreshold(systemSettings.burningTempThreshold);
@@ -1168,6 +1287,11 @@ void setup() {
         doc["relay_debounce_min"]     = systemSettings.relayDebounceMin;
         doc["boiler_iron_threshold"]  = systemSettings.boilerIronThreshold;
         doc["floor_delta_threshold"]  = systemSettings.floorDeltaThreshold;
+        doc["fan_on_temp"]            = systemSettings.fanOnTemp;
+        doc["burn_source"] = systemSettings.burnSource;
+        doc["fan_source"] = systemSettings.fanSource;
+        doc["iron_source"] = systemSettings.ironSource;
+        doc["water_source"] = systemSettings.waterSource;
         doc["mqtt_server"]            = systemSettings.mqttServer;
         doc["mqtt_port"]              = systemSettings.mqttPort;
         doc["mqtt_user"]              = systemSettings.mqttUser;
@@ -1194,6 +1318,11 @@ void setup() {
         defaults["relay_debounce_min"]     = RELAY_DEBOUNCE_MIN;
         defaults["boiler_iron_threshold"]  = BOILER_IRON_PUMP_THRESHOLD;
         defaults["floor_delta_threshold"]  = FLOOR_DELTA_THRESHOLD;
+        defaults["fan_on_temp"]            = FAN_ON_TEMP;
+        defaults["burn_source"] = DEFAULT_BURN_SOURCE;
+        defaults["fan_source"] = DEFAULT_FAN_SOURCE;
+        defaults["iron_source"] = DEFAULT_IRON_SOURCE;
+        defaults["water_source"] = DEFAULT_WATER_SOURCE;
         defaults["mqtt_server"]            = MQTT_SERVER;
         defaults["mqtt_port"]              = MQTT_PORT;
         defaults["mqtt_user"]              = MQTT_USER;
@@ -1239,6 +1368,12 @@ void setup() {
                 next.boilerIronThreshold = doc["boiler_iron_threshold"];
             if (doc.containsKey("floor_delta_threshold"))
                 next.floorDeltaThreshold = doc["floor_delta_threshold"];
+            if (doc.containsKey("fan_on_temp"))
+                next.fanOnTemp = doc["fan_on_temp"];
+            if (doc.containsKey("burn_source")) next.burnSource = doc["burn_source"] | -1;
+            if (doc.containsKey("fan_source")) next.fanSource = doc["fan_source"] | -1;
+            if (doc.containsKey("iron_source")) next.ironSource = doc["iron_source"] | -1;
+            if (doc.containsKey("water_source")) next.waterSource = doc["water_source"] | -1;
 
             bool mqttChanged = false;
             if (doc.containsKey("mqtt_server")) {
@@ -1486,7 +1621,7 @@ void setup() {
     // GET /api/selftest — progress / result
     webServer.on("/api/selftest", HTTP_GET, [](AsyncWebServerRequest *request) {
         AsyncResponseStream *response = request->beginResponseStream("application/json");
-        StaticJsonDocument<384> doc;
+        StaticJsonDocument<2048> doc;
         doc["running"] = selfTest.running || selfTestRequested;
         doc["done"]    = selfTest.done;
         doc["step"]    = selfTest.step;
@@ -1497,6 +1632,31 @@ void setup() {
         if (selfTest.tcOk) doc["tc_temp"] = selfTest.tcTemp; else doc["tc_temp"] = nullptr;
         doc["dallas_count"]  = selfTest.dallasCount;
         doc["dallas_valid"]  = selfTest.dallasValid;
+        if (selfTest.done && !selfTest.error) {
+            JsonArray sens = doc.createNestedArray("sensors");
+            for (int i = 0; i < HISTORY_CHANNELS; i++) {
+                JsonObject o = sens.createNestedObject();
+                o["name"] = TemperatureHistory::channelName(i);
+                o["assigned"] = selfTest.assigned[i];
+                if (isnan(selfTest.temps[i])) o["temp"] = nullptr; else o["temp"] = selfTest.temps[i];
+            }
+            JsonArray rel = doc.createNestedArray("relays");
+            for (int r = 0; r < RELAY_ROLE_COUNT; r++) {
+                JsonObject o = rel.createNestedObject();
+                o["id"]     = RelayConfig::roleId(r);
+                o["label"]  = RelayConfig::roleLabel(r);
+                o["pin"]    = selfTest.relayPin[r];
+                o["was_on"] = selfTest.relayWasOn[r];
+            }
+            JsonObject sys = doc.createNestedObject("system");
+            sys["wifi"]       = selfTest.wifiOk;
+            sys["rssi"]       = selfTest.rssi;
+            sys["mqtt"]       = selfTest.mqttOk;
+            sys["heap_free"]  = selfTest.heapFree;
+            sys["uptime_s"]   = selfTest.uptimeSec;
+            sys["duration_ms"] = selfTest.durationMs;
+            sys["build"]      = __DATE__ " " __TIME__;
+        }
         serializeJson(doc, *response);
         request->send(response);
     });
@@ -1708,6 +1868,16 @@ void loop() {
     if (currentMillis - lastSensorRead >= 1000) {
         lastSensorRead = currentMillis;
 
+        if (rulesResetPending) {
+            rulesResetPending = false;
+            rules = ruleDefaults();
+            logBuffer.log("Relay rules reset to defaults");
+        } else if (rulesPending) {
+            rules = pendingRules;
+            rulesPending = false;
+            logBuffer.log("Relay rules updated");
+        }
+
         // Read all sensors (or rescan the bus if the UI asked for it)
         if (dallasScanRequested) {
             dallasScanRequested = false;
@@ -1717,13 +1887,14 @@ void loop() {
         } else {
             readSensors();
         }
+        updateHeldTemps();
 
         // Check operation conditions
         // Flue-gas thermocouple with hysteresis: on above T, off below T - hysteresis
-        if (isnan(burningTemp))                                                   isBurning = false;
-        else if (burningTemp > systemSettings.burningTempThreshold)               isBurning = true;
-        else if (burningTemp < systemSettings.burningTempThreshold - BURNING_HYSTERESIS) isBurning = false;
-        bool isBoilerWaterHot = sensors.isBoilerWaterHot();
+        float burnT = sourceTemp(systemSettings.burnSource);
+        if (isnan(burnT))                                                   isBurning = false;
+        else if (burnT > systemSettings.burningTempThreshold)               isBurning = true;
+        else if (burnT < systemSettings.burningTempThreshold - BURNING_HYSTERESIS) isBurning = false;
         bool isBoilerWaterCritical = sensors.isBoilerWaterCritical();
 
         // Boiler-supply sensor watchdog (only if a sensor is actually assigned to that role)
@@ -1753,7 +1924,7 @@ void loop() {
         } else if (waterSensorFault) {
             handleSensorFault(isBurning);
         } else {
-            handleNormalOperation(isBurning, isBoilerWaterHot);
+            handleNormalOperation(isBurning);
         }
     }
 

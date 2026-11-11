@@ -17,9 +17,7 @@ Cableado completo en [wiring_diagram.md](wiring_diagram.md).
 ## Lógica de control
 
 - **Combustión**: se detecta con el termopar de gases. «Quemando» por encima de `burning_temp_threshold` (100 °C por defecto) y se apaga 5 °C por debajo (histéresis).
-- **Bomba de caldera**: ON si hay combustión, el hierro de la caldera está caliente (> 50 °C) o el agua está caliente (> 40 °C).
-- **Bomba de calefacción**: ON si la bomba de caldera funciona, el agua está caliente y (ida caldera − retorno suelo) supera el delta mínimo.
-- **Ventiladores**: ON mientras hay combustión.
+- **Bombas y ventiladores: reglas editables** (Config → Reglas de relés). Cada relé se enciende si se cumple *cualquier* grupo (O); un grupo se cumple si se cumplen *todas* sus condiciones (Y). Una condición compara una variable (las 9 temperaturas, «bomba de caldera encendida» o «hay combustión») —o la diferencia entre dos temperaturas— con un valor, con histéresis. Sin lectura del sensor la condición es falsa (salvo el operador «sin lectura»), y una lectura fallida se mantiene 1 min antes de darla por perdida. Se guardan en la flash (NVS, `rules`) y sobreviven a reinicios. Reglas de ejemplo por defecto (se editan en la web): **bomba de caldera** = combustión O hierro > 45 °C O ida caldera > 40 °C; **calefacción** = bomba de caldera encendida Y ida caldera > 45 °C (para por debajo de 40) Y (ida caldera − retorno suelo) > 5 °C (para por debajo de 2; sin sonda de retorno se ignora) Y ida suelo < 33 °C (corta por encima de 35, vuelve por debajo de 33; sin lectura de ida suelo queda apagada); **ventiladores** = combustión O hierro > 40 °C O ambiente arriba > 35 °C.
 - **Entrada de aire (PID)**: regula la temperatura que elijas en *Config → Objetivo del PID* hacia un objetivo en °C. Por defecto es la **ida de caldera (agua)**; los gases del termopar solo sirven para *detectar* la combustión, que es lo que activa el PID. Sin combustión el aire se cierra. El PID es propio ([pid_controller.h](include/pid_controller.h)): anti-windup, derivada sobre la medida y arranque sin saltos.
 - **Debounce de relés** (5 min por defecto) en automático, para no ciclar bombas.
 
@@ -55,7 +53,7 @@ El firmware y la interfaz van en imágenes distintas: sube las dos tras cambiar 
 Credenciales en `include/secrets.h` (WiFi y contraseña OTA; **no se versiona**: copia `include/secrets.h.example` a `include/secrets.h` y rellénalo); el WiFi también se puede cambiar desde el modo AP (`LumberBoiler-Setup`, `/wifi-setup`).
 
 ### Tests
-Lógica sin hardware (PID, histórico, mapa de relés, autoajuste):
+Lógica sin hardware (PID, histórico, mapa de relés, autoajuste, motor de reglas y su JSON; los tests de JSON necesitan haber hecho un `pio run` para tener ArduinoJson):
 ```sh
 test/host/run.sh
 ```
@@ -69,6 +67,7 @@ test/host/run.sh
 | `POST /api/manual` `{active}` | activa/desactiva el modo manual |
 | `POST /api/manual/actuators` | relés y servo (solo en manual) |
 | `POST /api/selftest` · `GET /api/selftest` | lanza / consulta el autotest (solo en manual) |
+| `GET/POST /api/rules` | reglas de los relés (`{"reset":true}` restaura las de fábrica) |
 | `GET/POST /api/config` | ajustes (con validación; rechaza valores incoherentes) |
 | `GET /api/config/export` · `POST /api/config/import` · `POST /api/config/reset` | backup (ajustes, mapa de relés, roles Dallas) |
 | `GET/POST /api/relays/map` | asignación función → canal de relé |

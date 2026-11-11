@@ -40,6 +40,17 @@
 // Combustion is "on" above BURNING_TEMP_THRESHOLD and only turns "off" again once the
 // flue gas falls below (threshold - BURNING_HYSTERESIS), to avoid on/off chatter
 #define BURNING_HYSTERESIS             5.0
+// Flue-gas temperature above which the fans turn on (off again below FAN_ON_TEMP - BURNING_HYSTERESIS)
+#define FAN_ON_TEMP                    100.0
+// Default temperature channel (history index) each decision is based on
+#define DEFAULT_BURN_SOURCE            8   // flue gas
+#define DEFAULT_FAN_SOURCE             8   // flue gas
+#define DEFAULT_IRON_SOURCE            2   // boiler iron
+#define DEFAULT_WATER_SOURCE           0   // boiler supply
+// Default: boiler supply above this also starts the heating pump (an editable rule group)
+#define DEFAULT_HEATING_ON_TEMP        70.0
+#define FAN_ON_TEMP_MIN                30.0
+#define FAN_ON_TEMP_MAX                300.0
 #define BOILER_WATER_TEMP_THRESHOLD    40.0
 #define BOILER_WATER_CRITICAL_TEMP     90.0
 

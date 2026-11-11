@@ -327,12 +327,29 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
     </div>
 
     <div class="card">
-        <h2>Umbrales</h2>
-        <div class="frow"><label>Detección de combustión (°C)<small>Termopar de gases: «quemando» por encima de este valor; se apaga 5 °C por debajo (histéresis)</small></label><input type="number" id="cfg-burn-thresh" step="0.5" oninput="updatePidWarn()"></div>
-        <div class="frow"><label>Agua caliente (°C)</label><input type="number" id="cfg-water-thresh" step="0.5"></div>
-        <div class="frow"><label>Agua crítica (°C)<small>Dispara el modo de emergencia</small></label><input type="number" id="cfg-water-crit" step="0.5"></div>
-        <div class="frow"><label>Hierro caldera (°C)<small>Mantiene la bomba mientras esté caliente</small></label><input type="number" id="cfg-iron-thresh" step="0.5"></div>
-        <div class="frow"><label>Delta suelo mínimo (°C)</label><input type="number" id="cfg-floor-delta" step="0.5"></div>
+        <h2>Detección de combustión</h2>
+        <div class="frow"><label>Variable<small>Temperatura que decide si hay fuego</small></label><select id="cfg-burn-src"></select></div>
+        <div class="frow"><label>«Quemando» por encima de<small>Termopar de gases. Se da por apagado 5 °C por debajo (histéresis). Activa el PID y la bomba de caldera</small></label>
+            <input type="range" id="cfg-burn-thresh" min="30" max="300" step="1" oninput="sv(this)">
+            <span class="val"><span id="cfg-burn-thresh-val">--</span> °C</span></div>
+    </div>
+
+    <div class="card" id="rules-card">
+        <h2>Reglas de relés</h2>
+        <p class="hint" style="font-size:12px;color:var(--muted);margin-bottom:10px">Cada relé se enciende si se cumple <b>cualquier</b> grupo (O). Un grupo se cumple si se cumplen <b>todas</b> sus condiciones (Y). Sin grupos, el relé queda apagado. «Sin lectura» es cierto cuando el sensor no da un valor válido desde hace más de 1 min (las lecturas se mantienen 1 min tras un fallo para no oscilar). La histéresis evita que oscile: «&gt;» se apaga al bajar de valor − histéresis. La emergencia (agua crítica) y el sensor de ida averiado siguen mandando sobre las reglas. Las reglas se guardan aparte con su propio botón.</p>
+        <div id="rules-box"></div>
+        <div class="actions" style="margin:12px 0 0">
+            <button type="button" class="btn" onclick="saveRules()">Guardar reglas</button>
+            <button type="button" class="btn grey" onclick="if(confirm('¿Restaurar las reglas por defecto?')) resetRules()">Reglas por defecto</button>
+        </div>
+        <div id="rules-msg" class="msg"></div>
+    </div>
+
+    <div class="card">
+        <h2>Emergencia</h2>
+        <div class="frow"><label>Agua crítica por encima de<small>Ida caldera: fuerza bombas y ventiladores, cierra el aire y cancela el modo manual</small></label>
+            <input type="range" id="cfg-water-crit" min="60" max="110" step="0.5" oninput="sv(this)">
+            <span class="val"><span id="cfg-water-crit-val">--</span> °C</span></div>
     </div>
 
     <div class="card">
@@ -493,7 +510,7 @@ async function api(url, method, body) {
 let SYS = { burning_temp_threshold: 100 };
 // Same order as the firmware history channels (also the PID source index)
 const PID_SOURCES = ['Ida caldera', 'Retorno caldera', 'Hierro caldera', 'Ida suelo', 'Retorno suelo', 'Ida mezcla', 'Ambiente abajo', 'Ambiente arriba', 'Gases de combustión (termopar)'];
-$('cfg-pid-source').innerHTML = PID_SOURCES.map((l, i) => `<option value="${i}">${l}</option>`).join('');
+['cfg-pid-source','cfg-burn-src'].forEach(id => $(id).innerHTML = PID_SOURCES.map((l, i) => `<option value="${i}">${l}</option>`).join(''));
 let ST = null;               // last status
 let manualMode = false;
 let userChangingMode = false;
@@ -943,9 +960,9 @@ function fillConfig(cfg) {
     const sl = $('cfg-target-temp'); sl.min = cfg.target_temp_min; sl.max = cfg.target_temp_max;
     setField('cfg-pid-source', cfg.pid_source != null ? cfg.pid_source : 0);
     setField('cfg-target-temp', cfg.target_burning_temp); setField('cfg-target-val', cfg.target_burning_temp, true);
-    setField('cfg-burn-thresh', cfg.burning_temp_threshold); setField('cfg-water-thresh', cfg.boiler_water_threshold);
-    setField('cfg-water-crit', cfg.boiler_water_critical);   setField('cfg-iron-thresh', cfg.boiler_iron_threshold);
-    setField('cfg-floor-delta', cfg.floor_delta_threshold);
+    setField('cfg-burn-thresh', cfg.burning_temp_threshold); setField('cfg-water-crit', cfg.boiler_water_critical);
+    setField('cfg-burn-src', cfg.burn_source);
+    ['cfg-burn-thresh','cfg-water-crit'].forEach(id => sv($(id)));
     setField('cfg-kp', cfg.pid_kp); setField('cfg-ki', cfg.pid_ki); setField('cfg-kd', cfg.pid_kd);
     setField('cfg-servo-min', cfg.servo_min); setField('cfg-servo-max', cfg.servo_max);
     setField('cfg-debounce', cfg.relay_debounce_min);
@@ -953,6 +970,7 @@ function fillConfig(cfg) {
     setField('cfg-mqtt-user', cfg.mqtt_user); setField('cfg-mqtt-topic', cfg.mqtt_base_topic);
     updatePidWarn();
 }
+function sv(el) { const v = $(el.id + '-val'); if (v) v.textContent = el.value; if (el.id === 'cfg-burn-thresh') updatePidWarn(); }
 function updatePidWarn() {
     const w = $('cfg-pid-warn'), src = parseInt($('cfg-pid-source').value), tgt = parseFloat($('cfg-target-temp').value), thr = parseFloat($('cfg-burn-thresh').value);
     if (src === 8 && !isNaN(thr) && tgt <= thr) {
@@ -961,6 +979,55 @@ function updatePidWarn() {
     } else w.className = 'msg';
 }
 fetch('/api/config').then(r => r.json()).then(fillConfig).catch(() => {});
+
+/* ── Reglas de relés ───────────────────────────────────────────── */
+const RULE_RELAYS = [['boiler_pump', 'Bomba de caldera'], ['heating_pump', 'Bomba de calefacción'], ['fans', 'Ventiladores']];
+const RULE_VARS = PID_SOURCES.concat(['Bomba de caldera encendida (1 = sí)', 'Hay combustión (1 = sí)']);
+let RULES = {}, RULE_MAX = { groups: 4, conds: 4 };
+const optList = (list, sel, none) => (none ? `<option value="-1"${sel < 0 ? ' selected' : ''}>${none}</option>` : '') + list.map((l, i) => `<option value="${i}"${i === sel ? ' selected' : ''}>${l}</option>`).join('');
+function renderRules() {
+    $('rules-box').innerHTML = RULE_RELAYS.map(([key, label]) => {
+        const groups = RULES[key] || [];
+        const gh = groups.map((g, gi) => `<div style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:8px 0">
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);font-weight:700">
+                <span>${gi ? 'O  ' : ''}Grupo ${gi + 1} — todas estas condiciones</span>
+                <button type="button" class="btn sm danger" onclick="ruleDelGroup('${key}',${gi})">Quitar grupo</button></div>
+            ${g.map((c, ci) => `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:5px 0">
+                ${ci ? '<b style="font-size:12px">Y</b>' : ''}
+                <select onchange="ruleSet('${key}',${gi},${ci},'a',+this.value)">${optList(RULE_VARS, c.a)}</select>
+                ${c.a < 9 ? `<span>menos</span><select onchange="ruleSet('${key}',${gi},${ci},'b',+this.value)">${optList(PID_SOURCES, c.b == null ? -1 : c.b, '—')}</select>` : ''}
+                <select onchange="ruleSet('${key}',${gi},${ci},'op',this.value)"><option value="&gt;"${c.op === '>' ? ' selected' : ''}>mayor que</option><option value="&lt;"${c.op === '<' ? ' selected' : ''}>menor que</option>${c.a < 9 ? `<option value="missing"${c.op === 'missing' ? ' selected' : ''}>sin lectura</option>` : ''}</select>
+                ${c.op === 'missing' ? '<span style="font-size:12px;color:var(--muted)">(sin lectura válida durante más de 1 min)</span>' : `<input type="number" step="0.5" value="${c.v}" style="width:80px" onchange="ruleSet('${key}',${gi},${ci},'v',parseFloat(this.value))">
+                <span style="font-size:12px;color:var(--muted)">histéresis</span>
+                <input type="number" step="0.5" min="0" value="${c.h || 0}" style="width:64px" onchange="ruleSet('${key}',${gi},${ci},'h',parseFloat(this.value))">`}
+                <button type="button" class="btn sm grey" onclick="ruleDelCond('${key}',${gi},${ci})">✕</button></div>`).join('')}
+            ${g.length < RULE_MAX.conds ? `<button type="button" class="btn sm grey" onclick="ruleAddCond('${key}',${gi})">+ condición (Y)</button>` : ''}</div>`).join('');
+        return `<div style="margin-bottom:16px"><div style="font-weight:700;font-size:15px">${label}${groups.length ? '' : ' <span style="font-weight:400;color:var(--muted);font-size:12px">— sin reglas: siempre apagado</span>'}</div>${gh}
+            ${groups.length < RULE_MAX.groups ? `<button type="button" class="btn sm blue" onclick="ruleAddGroup('${key}')">+ grupo (O)</button>` : ''}</div>`;
+    }).join('');
+}
+function ruleSet(k, gi, ci, f, v) { const c = RULES[k][gi][ci]; if (f === 'b') { if (v < 0) delete c.b; else c.b = v; } else c[f] = v; if (f === 'a' && v >= 9) { delete c.b; if (c.op === 'missing') c.op = '>'; }
+    if (f === 'op' && v === 'missing') { c.v = 0; c.h = 0; } renderRules(); }
+function ruleAddGroup(k) { (RULES[k] = RULES[k] || []).push([{ a: 0, op: '>', v: 50, h: 2 }]); renderRules(); }
+function ruleAddCond(k, gi) { RULES[k][gi].push({ a: 0, op: '>', v: 50, h: 2 }); renderRules(); }
+function ruleDelGroup(k, gi) { RULES[k].splice(gi, 1); renderRules(); }
+function ruleDelCond(k, gi, ci) { RULES[k][gi].splice(ci, 1); if (!RULES[k][gi].length) RULES[k].splice(gi, 1); renderRules(); }
+function rulesMsg(m, kind) { const el = $('rules-msg'); el.textContent = m; el.className = 'msg ' + kind; clearTimeout(rulesMsg.t); rulesMsg.t = setTimeout(() => el.className = 'msg', 3500); }
+function loadRules() {
+    return fetch('/api/rules').then(r => r.json()).then(d => { RULES = d.rules; RULE_MAX = { groups: d.max_groups, conds: d.max_conds }; renderRules(); }).catch(() => {});
+}
+function saveRules() {
+    for (const [k] of RULE_RELAYS) for (const g of RULES[k] || []) for (const c of g)
+        if (c.op !== 'missing' && (typeof c.v !== 'number' || isNaN(c.v) || typeof c.h !== 'number' || isNaN(c.h))) return rulesMsg('Hay un valor no válido en las reglas', 'err');
+    api('/api/rules', 'POST', RULES).then(r => {
+        if (r.data && r.data.success) rulesMsg(r.data.warning ? 'Aplicado, pero no se pudo guardar en flash' : 'Reglas guardadas', r.data.warning ? 'warn' : 'ok');
+        else rulesMsg('Error: ' + ((r.data && r.data.error) || '?'), 'err');
+    }).catch(() => rulesMsg('Error de red', 'err'));
+}
+function resetRules() {
+    api('/api/rules', 'POST', { reset: true }).then(() => new Promise(r => setTimeout(r, 1500))).then(loadRules).then(() => rulesMsg('Reglas por defecto restauradas', 'ok')).catch(() => rulesMsg('Error de red', 'err'));
+}
+loadRules();
 
 function showMsg(msg, kind) {
     const el = $('cfg-msg'); el.textContent = msg; el.className = 'msg ' + kind;
@@ -972,8 +1039,7 @@ function saveConfig() {
     const n = id => parseFloat($(id).value), i = id => parseInt($(id).value);
     const body = {
         target_burning_temp: n('cfg-target-temp'), pid_source: i('cfg-pid-source'), burning_temp_threshold: n('cfg-burn-thresh'),
-        boiler_water_threshold: n('cfg-water-thresh'), boiler_water_critical: n('cfg-water-crit'),
-        boiler_iron_threshold: n('cfg-iron-thresh'), floor_delta_threshold: n('cfg-floor-delta'),
+        boiler_water_critical: n('cfg-water-crit'), burn_source: i('cfg-burn-src'),
         pid_kp: n('cfg-kp'), pid_ki: n('cfg-ki'), pid_kd: n('cfg-kd'),
         servo_min: i('cfg-servo-min'), servo_max: i('cfg-servo-max'), relay_debounce_min: i('cfg-debounce'),
         mqtt_server: $('cfg-mqtt-server').value, mqtt_port: i('cfg-mqtt-port'),
@@ -981,7 +1047,6 @@ function saveConfig() {
     };
     // Basic validation before touching the boiler
     for (const [k, v] of Object.entries(body)) if (typeof v === 'number' && isNaN(v)) return showMsg('Valor no válido en «' + k + '»', 'err');
-    if (body.boiler_water_critical <= body.boiler_water_threshold) return showMsg('«Agua crítica» debe ser mayor que «Agua caliente»', 'err');
     if (body.servo_min >= body.servo_max || body.servo_min < 0 || body.servo_max > 180) return showMsg('Rango de servo no válido (0–180, mín < máx)', 'err');
     if (body.relay_debounce_min < 0 || body.relay_debounce_min > 60) return showMsg('Debounce fuera de rango (0–60 min)', 'err');
     const pass = $('cfg-mqtt-pass').value; if (pass) body.mqtt_password = pass;
@@ -992,7 +1057,7 @@ function saveConfig() {
 }
 function resetConfig() {
     api('/api/config/reset', 'POST').then(() => { showMsg('Valores por defecto restaurados', 'ok'); return fetch('/api/config'); })
-        .then(r => r.json()).then(fillConfig).catch(() => showMsg('Error de red', 'err'));
+        .then(r => r.json()).then(fillConfig).then(() => new Promise(r => setTimeout(r, 1500))).then(loadRules).catch(() => showMsg('Error de red', 'err'));
 }
 async function toggleAutotune() {
     const was = !!(ST && ST.auto_tuning);
@@ -1003,17 +1068,69 @@ async function toggleAutotune() {
 
 /* ── Autotest ──────────────────────────────────────────────────── */
 let selfTestBusy = false;
+let lastReport = '';
+function buildReport(d) {
+    const warn = [], fail = [];
+    if (!d.display_ok) warn.push('Pantalla OLED no detectada');
+    if (!d.tc_ok) fail.push('Termopar de gases sin lectura');
+    (d.sensors || []).forEach((x, i) => {
+        if (i === 8) return;
+        if (x.assigned && x.temp == null) fail.push('Sensor «' + (PID_SOURCES[i] || x.name) + '» asignado pero sin lectura');
+        else if (!x.assigned) warn.push('Sensor «' + (PID_SOURCES[i] || x.name) + '» sin asignar');
+    });
+    if (d.system && !d.system.wifi) warn.push('Sin WiFi');
+    if (d.system && d.system.wifi && d.system.rssi < -80) warn.push('Señal WiFi débil (' + d.system.rssi + ' dBm)');
+    if (d.system && !d.system.mqtt) warn.push('MQTT desconectado');
+    if (d.system && d.system.heap_free < 30000) warn.push('Poca memoria libre (' + d.system.heap_free + ' B)');
+    return { fail, warn, verdict: fail.length ? 'FALLOS' : warn.length ? 'CORRECTO CON AVISOS' : 'CORRECTO' };
+}
+function reportText(d, rep, when) {
+    const L = ['INFORME DE AUTOTEST — ' + when, 'Resultado: ' + rep.verdict, ''];
+    rep.fail.forEach(x => L.push('  [FALLO] ' + x)); rep.warn.forEach(x => L.push('  [AVISO] ' + x));
+    if (rep.fail.length || rep.warn.length) L.push('');
+    L.push('Pantalla OLED: ' + (d.display_ok ? 'detectada' : 'no detectada'));
+    L.push('Termopar MAX6675: ' + (d.tc_ok ? d.tc_temp.toFixed(1) + ' °C' : 'ERROR / sin lectura'));
+    L.push('Sensores Dallas: ' + d.dallas_valid + ' de ' + d.dallas_count + ' con lectura en el bus', '', 'Temperaturas:');
+    (d.sensors || []).forEach((x, i) => L.push('  ' + (PID_SOURCES[i] || x.name).padEnd(32) + (x.temp != null ? x.temp.toFixed(1) + ' °C' : (x.assigned ? 'SIN LECTURA' : '(sin asignar)'))));
+    L.push('', 'Relés (pulsados 1 s y restaurados; confirma a mano que cada dispositivo reaccionó):');
+    (d.relays || []).forEach(r => L.push('  ' + r.label.padEnd(24) + 'GPIO ' + r.pin + '  estado previo: ' + (r.was_on ? 'ON' : 'OFF')));
+    if (d.system) {
+        const s = d.system;
+        L.push('', 'Sistema:', '  WiFi: ' + (s.wifi ? 'conectado, ' + s.rssi + ' dBm' : 'desconectado'), '  MQTT: ' + (s.mqtt ? 'conectado' : 'desconectado'),
+            '  Memoria libre: ' + s.heap_free + ' B', '  Tiempo encendido: ' + fmtDur(s.uptime_s), '  Duración del test: ' + (s.duration_ms / 1000).toFixed(1) + ' s', '  Firmware compilado: ' + s.build);
+    }
+    return L.join('\n');
+}
 function renderSelfTest(d) {
-    const ok = v => `<span style="color:var(--ok);font-weight:700">${v}</span>`, bad = v => `<span style="color:var(--err);font-weight:700">${v}</span>`;
-    const rows = [
-        ['Pantalla OLED', d.display_ok ? ok('detectada') : bad('no detectada')],
-        ['Relés', d.relays_pulsed + ' de 4 pulsados — ¿reaccionó cada dispositivo?'],
-        ['Termopar MAX6675', d.tc_ok ? ok(d.tc_temp.toFixed(1) + ' °C') : bad('ERROR / sin lectura')],
-        ['Sensores Dallas', (d.dallas_valid === d.dallas_count && d.dallas_count > 0 ? ok : bad)(d.dallas_valid + ' de ' + d.dallas_count + ' con lectura')],
-    ];
     const out = $('selftest-out'); out.style.display = 'block';
-    out.innerHTML = d.error ? `<div class="msg err" style="display:block">${d.error}</div>`
-        : rows.map(r => `<div class="row"><span>${r[0]}</span><span>${r[1]}</span></div>`).join('');
+    if (d.error) { out.innerHTML = `<div class="msg err" style="display:block">${d.error}</div>`; return; }
+    const rep = buildReport(d), when = new Date().toLocaleString('es-ES');
+    lastReport = reportText(d, rep, when);
+    const col = rep.fail.length ? 'err' : rep.warn.length ? 'warn' : 'ok';
+    const tag = (c, t) => `<span style="color:var(--${c});font-weight:700">${t}</span>`;
+    const sec = t => `<div style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700;margin:14px 0 4px">${t}</div>`;
+    const row = (a, b) => `<div class="row"><span>${a}</span><span style="text-align:right">${b}</span></div>`;
+    const s = d.system || {};
+    out.innerHTML = `<div class="msg ${col}" style="display:block;font-weight:700">${rep.verdict} <span style="font-weight:400;font-size:12px">· ${when}</span></div>
+        ${rep.fail.concat(rep.warn).length ? '<ul style="margin:0 0 6px 18px;font-size:13px">' + rep.fail.map(x => `<li>${tag('err', 'Fallo:')} ${x}</li>`).join('') + rep.warn.map(x => `<li>${tag('warn', 'Aviso:')} ${x}</li>`).join('') + '</ul>' : ''}
+        ${sec('Pantalla y termopar')}
+        ${row('Pantalla OLED', d.display_ok ? tag('ok', 'detectada') : tag('warn', 'no detectada'))}
+        ${row('Termopar MAX6675', d.tc_ok ? tag('ok', d.tc_temp.toFixed(1) + ' °C') : tag('err', 'ERROR / sin lectura'))}
+        ${sec('Temperaturas (' + d.dallas_valid + ' de ' + d.dallas_count + ' sondas Dallas con lectura)')}
+        ${(d.sensors || []).map((x, i) => row(PID_SOURCES[i] || x.name, x.temp != null ? tag('ok', x.temp.toFixed(1) + ' °C') : (x.assigned ? tag('err', 'sin lectura') : '<span style="color:var(--muted)">sin asignar</span>'))).join('')}
+        ${sec('Relés — pulsados 1 s y restaurados')}
+        ${(d.relays || []).map(r => row(r.label + ' <small style="color:var(--muted)">GPIO ' + r.pin + '</small>', 'estado previo ' + (r.was_on ? 'ON' : 'OFF'))).join('')}
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">El firmware no puede saber si el aparato reaccionó: compruébalo a mano.</div>
+        ${sec('Sistema')}
+        ${row('WiFi', s.wifi ? tag('ok', 'conectado · ' + s.rssi + ' dBm') : tag('warn', 'desconectado'))}
+        ${row('MQTT', s.mqtt ? tag('ok', 'conectado') : tag('warn', 'desconectado'))}
+        ${row('Memoria libre', s.heap_free + ' B')}${row('Tiempo encendido', fmtDur(s.uptime_s))}${row('Duración del test', (s.duration_ms / 1000).toFixed(1) + ' s')}${row('Firmware', s.build)}
+        <div class="actions" style="margin:12px 0 0"><button type="button" class="btn sm grey" onclick="copyReport()">Copiar informe</button><button type="button" class="btn sm grey" onclick="downloadReport()">Descargar .txt</button></div>`;
+}
+function copyReport() { (navigator.clipboard ? navigator.clipboard.writeText(lastReport) : Promise.reject()).then(() => toast('Informe copiado'), () => toast('No se pudo copiar', true)); }
+function downloadReport() {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lastReport], { type: 'text/plain' }));
+    a.download = 'autotest-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.txt'; a.click(); URL.revokeObjectURL(a.href);
 }
 async function runSelfTest() {
     const btn = $('btn-selftest'); selfTestBusy = true; btn.disabled = true; $('selftest-out').style.display = 'none';

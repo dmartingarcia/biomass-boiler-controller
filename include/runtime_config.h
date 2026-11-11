@@ -26,6 +26,8 @@ struct RuntimeSettings {
     int      relayDebounceMin;
     float    boilerIronThreshold;
     float    floorDeltaThreshold;
+    float    fanOnTemp;
+    int      burnSource, fanSource, ironSource, waterSource;
     char     mqttServer[64];
     uint16_t mqttPort;
     char     mqttUser[32];
@@ -46,6 +48,9 @@ struct RuntimeSettings {
         relayDebounceMin         = RELAY_DEBOUNCE_MIN;
         boilerIronThreshold      = BOILER_IRON_PUMP_THRESHOLD;
         floorDeltaThreshold      = FLOOR_DELTA_THRESHOLD;
+        fanOnTemp                = FAN_ON_TEMP;
+        burnSource = DEFAULT_BURN_SOURCE; fanSource = DEFAULT_FAN_SOURCE;
+        ironSource = DEFAULT_IRON_SOURCE; waterSource = DEFAULT_WATER_SOURCE;
         strlcpy(mqttServer,    MQTT_SERVER,     sizeof(mqttServer));
         mqttPort = MQTT_PORT;
         strlcpy(mqttUser,      MQTT_USER,       sizeof(mqttUser));
@@ -72,6 +77,12 @@ struct RuntimeSettings {
                 relayDebounceMin         = prefs.getInt("debounce_min",    relayDebounceMin);
                 boilerIronThreshold      = prefs.getFloat("iron_thresh",  boilerIronThreshold);
                 floorDeltaThreshold      = prefs.getFloat("floor_delta",  floorDeltaThreshold);
+                // Settings saved before this existed: fans followed the combustion threshold
+                fanOnTemp                = prefs.isKey("fan_on") ? prefs.getFloat("fan_on", fanOnTemp) : burningTempThreshold;
+                burnSource               = prefs.getInt("src_burn",       burnSource);
+                fanSource                = prefs.getInt("src_fan",        fanSource);
+                ironSource               = prefs.getInt("src_iron",       ironSource);
+                waterSource              = prefs.getInt("src_water",      waterSource);
                 mqttPort                 = prefs.getUShort("mqtt_port",   mqttPort);
                 if (prefs.isKey("mqtt_server")) prefs.getString("mqtt_server", mqttServer,    sizeof(mqttServer));
                 if (prefs.isKey("mqtt_user"))   prefs.getString("mqtt_user",   mqttUser,      sizeof(mqttUser));
@@ -114,6 +125,11 @@ struct RuntimeSettings {
         prefs.putInt("debounce_min",    relayDebounceMin);
         prefs.putFloat("iron_thresh",  boilerIronThreshold);
         prefs.putFloat("floor_delta",  floorDeltaThreshold);
+        prefs.putFloat("fan_on",       fanOnTemp);
+        prefs.putInt("src_burn",       burnSource);
+        prefs.putInt("src_fan",        fanSource);
+        prefs.putInt("src_iron",       ironSource);
+        prefs.putInt("src_water",      waterSource);
         prefs.putString("mqtt_server", mqttServer);
         prefs.putUShort("mqtt_port",   mqttPort);
         prefs.putString("mqtt_user",   mqttUser);
@@ -128,7 +144,7 @@ struct RuntimeSettings {
         auto bad = [](float v) { return isnan(v) || isinf(v); };
         if (bad(burningTempThreshold) || bad(boilerWaterTempThreshold) || bad(boilerWaterCriticalTemp) ||
             bad(targetBurningTemp) || bad(pidKp) || bad(pidKi) || bad(pidKd) ||
-            bad(boilerIronThreshold) || bad(floorDeltaThreshold))
+            bad(boilerIronThreshold) || bad(floorDeltaThreshold) || bad(fanOnTemp))
             return "Algún valor no es un número";
         if (boilerWaterCriticalTemp <= boilerWaterTempThreshold)
             return "«Agua crítica» debe ser mayor que «Agua caliente»";
@@ -150,6 +166,11 @@ struct RuntimeSettings {
             return "Umbral de hierro fuera de rango (0–120 °C)";
         if (floorDeltaThreshold < 0 || floorDeltaThreshold > 50)
             return "Delta de suelo fuera de rango (0–50 °C)";
+        if (burnSource < 0 || burnSource > 8 || fanSource < 0 || fanSource > 8 ||
+            ironSource < 0 || ironSource > 8 || waterSource < 0 || waterSource > 8)
+            return "Temperatura de decisión no válida";
+        if (fanOnTemp < FAN_ON_TEMP_MIN || fanOnTemp > FAN_ON_TEMP_MAX)
+            return "Temperatura de ventiladores fuera de rango (30–300 °C)";
         if (mqttPort == 0)
             return "Puerto MQTT no válido";
         return nullptr;
