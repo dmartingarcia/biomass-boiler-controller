@@ -52,7 +52,7 @@ pio run -e ota -t uploadfs               # OTA: interfaz (data/index.html)
 
 El firmware y la interfaz van en imágenes distintas: sube las dos tras cambiar la API. La partición de datos es de 128 KB y `index.html` ocupa ~64 KB.
 
-Credenciales por defecto en `include/secrets.h` (WiFi y contraseña OTA); el WiFi también se puede cambiar desde el modo AP (`LumberBoiler-Setup`, `/wifi-setup`).
+Credenciales en `include/secrets.h` (WiFi y contraseña OTA; **no se versiona**: copia `include/secrets.h.example` a `include/secrets.h` y rellénalo); el WiFi también se puede cambiar desde el modo AP (`LumberBoiler-Setup`, `/wifi-setup`).
 
 ### Tests
 Lógica sin hardware (PID, histórico, mapa de relés, autoajuste):
