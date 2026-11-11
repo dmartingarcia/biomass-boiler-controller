@@ -37,7 +37,8 @@ struct RuleCond {
     uint8_t op = RULE_OP_GT;
     float  value = 0;
     float  hyst = 0;
-    bool   state = false;     // runtime latch (not persisted)
+    bool   state = false;     // runtime result / latch (not persisted)
+    float  last = NAN;        // runtime: value compared in the last evaluation (NAN = no reading)
 };
 struct RuleGroup { uint8_t n = 0; RuleCond c[RULE_MAX_CONDS]; };
 struct RelayRule { uint8_t n = 0; RuleGroup g[RULE_MAX_GROUPS]; };
@@ -53,6 +54,7 @@ inline bool ruleEvalCond(RuleCond& c, const float* vars) {
     float x = vars[c.a];
     if (c.b >= 0) x -= vars[c.b];
     bool missing = isnan(x) || isinf(x);
+    c.last = missing ? NAN : x;
     if (c.op == RULE_OP_TRUE || c.op == RULE_OP_FALSE) {      // boolean variable: stored as 1 / 0
         c.state = !missing && ((x != 0) == (c.op == RULE_OP_TRUE));
         return c.state;
@@ -79,6 +81,17 @@ inline bool ruleEvalRelay(RelayRule& r, const float* vars) {
         if (all) any = true;
     }
     return any;
+}
+
+// Result of the last evaluation (to show live in the UI)
+inline bool ruleGroupOn(const RuleGroup& g) {
+    if (g.n == 0) return false;
+    for (uint8_t i = 0; i < g.n; i++) if (!g.c[i].state) return false;
+    return true;
+}
+inline bool ruleRelayOn(const RelayRule& r) {
+    for (uint8_t i = 0; i < r.n; i++) if (ruleGroupOn(r.g[i])) return true;
+    return false;
 }
 
 // nullptr when coherent, otherwise a message for the user

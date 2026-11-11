@@ -1192,6 +1192,23 @@ void setup() {
         }
     );
 
+    // GET /api/rules/state — live result of the rules (registered before /api/rules: prefix match)
+    webServer.on("/api/rules/state", HTTP_GET, [](AsyncWebServerRequest *request) {
+        AsyncResponseStream *response = request->beginResponseStream("application/json");
+        DynamicJsonDocument doc(6144);
+        JsonObject root = doc.to<JsonObject>();
+        // Rules are only evaluated in automatic mode without emergency
+        root["mode"] = killSwitchActive ? "emergency" : manualMode ? "manual" : waterSensorFault ? "fault" : "auto";
+        root["pending"] = rulesPending;
+        rulesStateToJson(rules, root.createNestedObject("state"));
+        JsonObject act = root.createNestedObject("actual");
+        act["boiler_pump"]  = boilerPumpRelay.getState();
+        act["heating_pump"] = heatingPumpRelay.getState();
+        act["fans"]         = fansRelay.getState();
+        serializeJson(doc, *response);
+        request->send(response);
+    });
+
     // GET /api/rules — current relay rules + variable names
     webServer.on("/api/rules", HTTP_GET, [](AsyncWebServerRequest *request) {
         AsyncResponseStream *response = request->beginResponseStream("application/json");

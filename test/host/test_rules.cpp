@@ -147,6 +147,27 @@ static void test_sensor_hold() {
     CHECK(glitchOk, "fans ride through a 20 s thermocouple glitch, stop after 60 s without reading, resume on recovery");
 }
 
+static void test_live_state() {
+    printf("Live state (group / relay results and compared values)\n");
+    RelayRule r;
+    ruleAddGroup(r, { ruleCond(0, true, 40), ruleCond(2, true, 30) });
+    ruleAddGroup(r, { ruleCond(0, true, 70) });
+    float v[RULE_VAR_COUNT]; vars(v, 50, 0, 20, 0, 0, 0, 0, 0, 0, false);
+    ruleEvalRelay(r, v);
+    CHECK(r.g[0].c[0].state && !r.g[0].c[1].state, "per-condition results are kept (50>40 yes, 20>30 no)");
+    CHECK(r.g[0].c[0].last == 50 && r.g[0].c[1].last == 20, "the compared value is kept for display");
+    CHECK(!ruleGroupOn(r.g[0]) && !ruleGroupOn(r.g[1]) && !ruleRelayOn(r), "group 1 fails on iron, group 2 fails: relay off");
+    vars(v, 75, 0, 20, 0, 0, 0, 0, 0, 0, false); ruleEvalRelay(r, v);
+    CHECK(!ruleGroupOn(r.g[0]) && ruleGroupOn(r.g[1]) && ruleRelayOn(r), "group 2 satisfied alone turns the relay on (OR)");
+    vars(v, 75, 0, 35, 0, 0, 0, 0, 0, 0, false); ruleEvalRelay(r, v);
+    CHECK(ruleGroupOn(r.g[0]) && ruleGroupOn(r.g[1]), "both groups can be satisfied at once");
+    RuleCond d = ruleCond(0, true, 5, 0, 4); vars(v, 60, 0, 0, 0, 52, 0, 0, 0, 0, false); ruleEvalCond(d, v);
+    CHECK(fabsf(d.last - 8) < 1e-4, "for a difference, the compared value is a - b");
+    v[4] = NAN; ruleEvalCond(d, v);
+    CHECK(isnan(d.last) && !d.state, "no reading: last is NAN");
+    RelayRule e; CHECK(!ruleRelayOn(e), "no groups: off");
+}
+
 static void test_validate() {
     printf("Validation\n");
     RuleSet ok; ruleAddGroup(ok.relay[0], { ruleCond(0, true, 50, 2) });
@@ -269,6 +290,25 @@ static void test_json() {
     CHECK(toStr(ms).find("\"fans\":[[{\"a\":4,\"op\":\"missing\"}]]") != std::string::npos, "'missing' serialises without value/hysteresis");
     CHECK(js.find("\"op\":\"missing\"") != std::string::npos && js.find("0.5") == std::string::npos, "default rules include the 'missing' group and no 0.5 hack");
 
+    // Live state JSON
+    {
+        RuleSet ls = ruleDefaults(); float lv[RULE_VAR_COUNT]; vars(lv, 60, 30, 50, 25, NAN, 40, 20, 22, 90, true);
+        ruleEvalRelay(ls.relay[RULE_BOILER_PUMP], lv); lv[RULE_VAR_BOILER_PUMP] = 1;
+        ruleEvalRelay(ls.relay[RULE_HEATING_PUMP], lv); ruleEvalRelay(ls.relay[RULE_FANS], lv);
+        DynamicJsonDocument sd(4096); rulesStateToJson(ls, sd.to<JsonObject>());
+        std::string st; serializeJson(sd, st);
+        CHECK(sd["boiler_pump"]["on"] == true && sd["fans"]["on"] == true && sd["heating_pump"]["on"] == true, "live JSON: relay results");
+        CHECK(sd["heating_pump"]["groups"].size() == 2 && sd["heating_pump"]["groups"][0]["conds"].size() == 4, "live JSON: same shape as the rules");
+        CHECK(sd["heating_pump"]["groups"][0]["on"] == false && sd["heating_pump"]["groups"][1]["on"] == true, "live JSON: group 1 fails (no return reading), group 2 ('missing') passes");
+        CHECK(sd["heating_pump"]["groups"][0]["conds"][2]["x"].isNull() && sd["heating_pump"]["groups"][0]["conds"][1]["x"] == 60, "live JSON: x is null without a reading, else the compared value");
+        CHECK(st.size() < 3500, "live JSON fits the response buffer");
+        RuleSet full;
+        for (int r = 0; r < RULE_RELAYS; r++) for (int g = 0; g < RULE_MAX_GROUPS; g++)
+            ruleAddGroup(full.relay[r], { ruleCond(0, true, 1), ruleCond(1, true, 1), ruleCond(2, true, 1), ruleCond(3, true, 1) });
+        DynamicJsonDocument fd(6144); rulesStateToJson(full, fd.to<JsonObject>());
+        CHECK(!fd.overflowed(), "a completely full rule set fits the 6144-byte live document");
+    }
+
     // Partial update: only the relays present are replaced
     RuleSet p = a;
     CHECK(!parse("{\"fans\":[[{\"a\":0,\"op\":\">\",\"v\":60,\"h\":3}]]}", p), "partial POST with only 'fans' accepted");
@@ -309,7 +349,7 @@ static void test_json() {
 #endif
 
 int main() {
-    test_condition(); test_missing_operator(); test_sensor_hold(); test_missing_and_diff(); test_groups(); test_validate();
+    test_condition(); test_live_state(); test_missing_operator(); test_sensor_hold(); test_missing_and_diff(); test_groups(); test_validate();
     test_default_rules();
 #ifndef NO_JSON_TESTS
     test_json();

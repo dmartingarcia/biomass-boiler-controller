@@ -77,6 +77,27 @@ inline void rulesToJson(const RuleSet& rs, JsonObject obj) {
     }
 }
 
+// Live evaluation result: per relay whether the rules want it ON, and per group / condition
+// whether it is satisfied, with the value that was compared ("x", null when there is no reading)
+inline void rulesStateToJson(const RuleSet& rs, JsonObject obj) {
+    for (int r = 0; r < RULE_RELAYS; r++) {
+        JsonObject ro = obj.createNestedObject(ruleRelayKey(r));
+        ro["on"] = ruleRelayOn(rs.relay[r]);
+        JsonArray groups = ro.createNestedArray("groups");
+        for (uint8_t gi = 0; gi < rs.relay[r].n; gi++) {
+            const RuleGroup& g = rs.relay[r].g[gi];
+            JsonObject go = groups.createNestedObject();
+            go["on"] = ruleGroupOn(g);
+            JsonArray conds = go.createNestedArray("conds");
+            for (uint8_t ci = 0; ci < g.n; ci++) {
+                JsonObject co = conds.createNestedObject();
+                co["on"] = g.c[ci].state;
+                if (isnan(g.c[ci].last)) co["x"] = nullptr; else co["x"] = g.c[ci].last;
+            }
+        }
+    }
+}
+
 #ifndef RULES_IO_NO_NVS
 #include <Preferences.h>
 // Loads the saved rules; false when none are stored (or they are corrupt)

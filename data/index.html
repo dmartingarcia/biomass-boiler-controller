@@ -108,6 +108,8 @@ input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 
 .btn.danger { background: var(--err); } .btn.orange { background: var(--accent); }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn.sm { padding: 5px 12px; font-size: 13px; }
+.rc, .rg { transition: background .3s; }
+.live-on { background: var(--ok-soft); } .live-off { background: var(--err-soft); }
 .frow { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .frow:last-child { border-bottom: none; }
 .frow > label { flex: 1 1 200px; font-size: 14px; font-weight: 600; }
@@ -337,6 +339,7 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
     <div class="card" id="rules-card">
         <h2>Reglas de relés</h2>
         <p class="hint" style="font-size:12px;color:var(--muted);margin-bottom:10px">Cada relé se enciende si se cumple <b>cualquier</b> grupo (O). Un grupo se cumple si se cumplen <b>todas</b> sus condiciones (Y). Sin grupos, el relé queda apagado. «Sin lectura» es cierto cuando el sensor no da un valor válido desde hace más de 1 min (las lecturas se mantienen 1 min tras un fallo para no oscilar). La histéresis evita que oscile: «&gt;» se apaga al bajar de valor − histéresis. La emergencia (agua crítica) y el sensor de ida averiado siguen mandando sobre las reglas. Las reglas se guardan aparte con su propio botón.</p>
+        <div id="rules-live" style="font-size:12px;margin-bottom:8px;color:var(--muted)"></div>
         <div id="rules-box"></div>
         <div class="actions" style="margin:12px 0 0">
             <button type="button" class="btn" onclick="saveRules()">Guardar reglas</button>
@@ -987,12 +990,14 @@ fetch('/api/config').then(r => r.json()).then(fillConfig).catch(() => {});
 /* ── Reglas de relés ───────────────────────────────────────────── */
 const RULE_RELAYS = [['boiler_pump', 'Bomba de caldera'], ['heating_pump', 'Bomba de calefacción'], ['fans', 'Ventiladores']];
 const RULE_VARS = PID_SOURCES.concat(['Bomba de caldera encendida', 'Hay combustión']);
+let LIVE = null, rulesDirty = false;
 let RULES = {}, RULE_MAX = { groups: 4, conds: 4 };
 const optList = (list, sel, none) => (none ? `<option value="-1"${sel < 0 ? ' selected' : ''}>${none}</option>` : '') + list.map((l, i) => `<option value="${i}"${i === sel ? ' selected' : ''}>${l}</option>`).join('');
-function renderRules() {
+function renderRules(dirty) {
+    rulesDirty = !!dirty;
     $('rules-box').innerHTML = RULE_RELAYS.map(([key, label]) => {
         const groups = RULES[key] || [];
-        const gh = groups.map((g, gi) => `<div style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:8px 0">
+        const gh = groups.map((g, gi) => `<div class="rg" id="rg-${key}-${gi}" style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:8px 0">
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);font-weight:700">
                 <span>${gi ? 'O  ' : ''}Grupo ${gi + 1} — todas estas condiciones</span>
                 <button type="button" class="btn sm danger" onclick="ruleDelGroup('${key}',${gi})">Quitar grupo</button></div>
@@ -1008,32 +1013,90 @@ function renderRules() {
                     : kind === 'delta'
                         ? sel('a', PID_SOURCES, c.a, 0) + '<b>−</b>' + sel('b', PID_SOURCES, c.b, 0) + opSel + num
                         : sel('a', PID_SOURCES, c.a, 0) + opSel + num;
-                return `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:5px 0">${ci ? '<b style="font-size:12px">Y</b>' : ''}${kindSel}${body}<button type="button" class="btn sm grey" onclick="ruleDelCond('${key}',${gi},${ci})">✕</button></div>`;
+                return `<div class="rc" id="rc-${key}-${gi}-${ci}" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:5px 6px;border-radius:8px">${ci ? '<b style="font-size:12px">Y</b>' : ''}${kindSel}${body}<span class="rx" id="rx-${key}-${gi}-${ci}" style="font-size:12px;color:var(--muted);margin-left:auto"></span><button type="button" class="btn sm grey" onclick="ruleDelCond('${key}',${gi},${ci})">✕</button></div>`;
             }).join('')}
             ${g.length < RULE_MAX.conds ? `<button type="button" class="btn sm grey" onclick="ruleAddCond('${key}',${gi})">+ condición (Y)</button>` : ''}</div>`).join('');
-        return `<div style="margin-bottom:16px"><div style="font-weight:700;font-size:15px">${label}${groups.length ? '' : ' <span style="font-weight:400;color:var(--muted);font-size:12px">— sin reglas: siempre apagado</span>'}</div>${gh}
+        return `<div style="margin-bottom:16px"><div style="font-weight:700;font-size:15px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">${label}<span id="rb-${key}" style="font-size:12px;font-weight:600"></span>${groups.length ? '' : ' <span style="font-weight:400;color:var(--muted);font-size:12px">— sin reglas: siempre apagado</span>'}</div><div class="rwhy" id="rw-${key}" style="font-size:12px;color:var(--muted);margin:2px 0 4px"></div>${gh}
             ${groups.length < RULE_MAX.groups ? `<button type="button" class="btn sm blue" onclick="ruleAddGroup('${key}')">+ grupo (O)</button>` : ''}</div>`;
     }).join('');
+    applyLive();
 }
+
+/* Live result of the rules: green = satisfied, red = not, with the value compared */
+const OP_SYM = { '>': '>', '<': '<' };
+function condText(c) {
+    const A = RULE_VARS[c.a], B = c.b != null ? PID_SOURCES[c.b] : null, who = B ? A + ' − ' + B : A;
+    if (c.op === 'true' || c.op === 'false') return A + (c.op === 'true' ? ': sí' : ': no');
+    if (c.op === 'missing') return who + ' sin lectura';
+    return who + ' ' + OP_SYM[c.op] + ' ' + c.v;
+}
+function xText(c, x) {
+    if (x == null) return 'sin lectura';
+    return c.a >= 9 ? (x ? 'sí' : 'no') : x.toFixed(1) + (c.b != null ? ' °C de diferencia' : ' °C');
+}
+function liveMatches() {
+    if (!LIVE || !LIVE.state) return false;
+    return RULE_RELAYS.every(([k]) => {
+        const g = RULES[k] || [], st = LIVE.state[k] && LIVE.state[k].groups;
+        return st && st.length === g.length && g.every((gg, i) => st[i].conds.length === gg.length);
+    });
+}
+function applyLive() {
+    const note = $('rules-live'); if (!note) return;
+    const clear = () => document.querySelectorAll('#rules-box .rc, #rules-box .rg').forEach(e => e.classList.remove('live-on', 'live-off'));
+    const wipe = () => { clear(); document.querySelectorAll('#rules-box .rx, #rules-box .rwhy, #rules-box [id^="rb-"]').forEach(e => e.textContent = ''); };
+    if (rulesDirty) { wipe(); note.textContent = 'Cambios sin guardar: la vista en vivo está en pausa hasta que guardes.'; return; }
+    if (!LIVE) { wipe(); note.textContent = 'Conectando con la caldera…'; return; }
+    if (LIVE.mode === 'manual' || LIVE.mode === 'emergency') {
+        wipe(); note.textContent = LIVE.mode === 'manual' ? 'Modo manual: las reglas no se evalúan (mandas tú).' : 'EMERGENCIA: las reglas no mandan; bombas y ventiladores forzados y aire cerrado.'; return;
+    }
+    if (LIVE.pending || !liveMatches()) { wipe(); note.textContent = 'Aplicando reglas…'; return; }
+    note.textContent = 'En vivo · verde = se cumple, rojo = no' + (LIVE.mode === 'fault' ? ' · sensor de ida averiado: modo seguro activo' : '') + ' · ' + new Date(LIVE.t).toLocaleTimeString('es-ES');
+    for (const [k] of RULE_RELAYS) {
+        const rs = LIVE.state[k], groups = RULES[k] || [], fails = [], won = [];
+        groups.forEach((g, gi) => {
+            const gs = rs.groups[gi];
+            $('rg-' + k + '-' + gi).className = 'rg ' + (gs.on ? 'live-on' : 'live-off');
+            const bad = [];
+            g.forEach((c, ci) => {
+                const cs = gs.conds[ci];
+                $('rc-' + k + '-' + gi + '-' + ci).className = 'rc ' + (cs.on ? 'live-on' : 'live-off');
+                $('rx-' + k + '-' + gi + '-' + ci).textContent = 'ahora: ' + xText(c, cs.x);
+                if (!cs.on) bad.push(c.op === 'missing' ? (c.b != null ? PID_SOURCES[c.a] + ' − ' + PID_SOURCES[c.b] : PID_SOURCES[c.a]) + ' sí tiene lectura (' + xText(c, cs.x) + ')' : condText(c) + ' (ahora ' + xText(c, cs.x) + ')');
+            });
+            if (gs.on) won.push(gi + 1); else fails.push('Grupo ' + (gi + 1) + ': falla ' + bad.join(' y '));
+        });
+        const actual = LIVE.actual[k];
+        $('rb-' + k).innerHTML = `<span style="color:var(--${rs.on ? 'ok' : 'err'})">reglas: ${rs.on ? 'ENCENDER' : 'APAGAR'}</span> <span style="color:var(--muted);font-weight:400">· relé ${actual ? 'ON' : 'OFF'}${actual !== rs.on ? ' (aún no ha cambiado: debounce)' : ''}</span>`;
+        $('rw-' + k).textContent = !groups.length ? 'Sin reglas: siempre apagado.'
+            : rs.on ? 'Enciende porque se cumple ' + (won.length > 1 ? 'los grupos ' : 'el grupo ') + won.join(' y ') + '.'
+            : 'Apagado: ' + fails.join(' · ');
+    }
+}
+function pollLive() {
+    if (document.hidden || !$('rules-box') || !$('rules-box').offsetParent) return;
+    fetch('/api/rules/state').then(r => r.json()).then(d => { LIVE = d; LIVE.t = Date.now(); applyLive(); }).catch(() => {});
+}
+setInterval(pollLive, 2000);
 function ruleKind(k, gi, ci, kind) {
     const c = RULES[k][gi][ci];
     for (const f of ['b', 'v', 'h']) delete c[f];
     if (kind === 'bool') c.a = 10, c.op = 'true';
     else if (kind === 'delta') c.a = 0, c.b = 4, c.op = '>', c.v = 5, c.h = 2;
     else c.a = 0, c.op = '>', c.v = 50, c.h = 2;
-    renderRules();
+    renderRules(true);
 }
 function ruleSet(k, gi, ci, f, v) {
     const c = RULES[k][gi][ci];
     c[f] = v;
     if (f === 'op' && (v === 'missing' || v === 'true' || v === 'false')) { delete c.v; delete c.h; }
     if (f === 'op' && (v === '>' || v === '<') && c.v == null) { c.v = 50; c.h = 2; }
-    renderRules();
+    renderRules(true);
 }
-function ruleAddGroup(k) { (RULES[k] = RULES[k] || []).push([{ a: 0, op: '>', v: 50, h: 2 }]); renderRules(); }
-function ruleAddCond(k, gi) { RULES[k][gi].push({ a: 0, op: '>', v: 50, h: 2 }); renderRules(); }
-function ruleDelGroup(k, gi) { RULES[k].splice(gi, 1); renderRules(); }
-function ruleDelCond(k, gi, ci) { RULES[k][gi].splice(ci, 1); if (!RULES[k][gi].length) RULES[k].splice(gi, 1); renderRules(); }
+function ruleAddGroup(k) { (RULES[k] = RULES[k] || []).push([{ a: 0, op: '>', v: 50, h: 2 }]); renderRules(true); }
+function ruleAddCond(k, gi) { RULES[k][gi].push({ a: 0, op: '>', v: 50, h: 2 }); renderRules(true); }
+function ruleDelGroup(k, gi) { RULES[k].splice(gi, 1); renderRules(true); }
+function ruleDelCond(k, gi, ci) { RULES[k][gi].splice(ci, 1); if (!RULES[k][gi].length) RULES[k].splice(gi, 1); renderRules(true); }
 function rulesMsg(m, kind) { const el = $('rules-msg'); el.textContent = m; el.className = 'msg ' + kind; clearTimeout(rulesMsg.t); rulesMsg.t = setTimeout(() => el.className = 'msg', 3500); }
 function loadRules() {
     return fetch('/api/rules').then(r => r.json()).then(d => { RULES = d.rules; RULE_MAX = { groups: d.max_groups, conds: d.max_conds }; renderRules(); }).catch(() => {});
@@ -1042,7 +1105,7 @@ function saveRules() {
     for (const [k] of RULE_RELAYS) for (const g of RULES[k] || []) for (const c of g)
         if ((c.op === '>' || c.op === '<') && (typeof c.v !== 'number' || isNaN(c.v) || typeof c.h !== 'number' || isNaN(c.h))) return rulesMsg('Hay un valor no válido en las reglas', 'err');
     api('/api/rules', 'POST', RULES).then(r => {
-        if (r.data && r.data.success) rulesMsg(r.data.warning ? 'Aplicado, pero no se pudo guardar en flash' : 'Reglas guardadas', r.data.warning ? 'warn' : 'ok');
+        if (r.data && r.data.success) { rulesDirty = false; applyLive(); setTimeout(pollLive, 1500); rulesMsg(r.data.warning ? 'Aplicado, pero no se pudo guardar en flash' : 'Reglas guardadas', r.data.warning ? 'warn' : 'ok'); }
         else rulesMsg('Error: ' + ((r.data && r.data.error) || '?'), 'err');
     }).catch(() => rulesMsg('Error de red', 'err'));
 }
