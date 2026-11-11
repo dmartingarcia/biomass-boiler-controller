@@ -127,7 +127,15 @@ public:
                 if (logBuffer) logBuffer->log("WiFi disconnected, reconnecting...");
                 startWiFiConnection();
             }
-            // Don't reconnect when in AP_MODE — user might be configuring
+            else if (wifiState == WIFI_AP_MODE) {
+                // A saved network exists, so the AP may only be here because the router was
+                // slow to come back (e.g. after a power cut). Retry unless somebody is
+                // currently connected to the setup AP.
+                if (strlen(currentConfig.ssid) > 0 && WiFi.softAPgetStationNum() == 0) {
+                    if (logBuffer) logBuffer->log("AP mode: retrying saved WiFi network...");
+                    startWiFiConnection();
+                }
+            }
         }
     }
 

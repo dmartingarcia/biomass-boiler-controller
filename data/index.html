@@ -1,1051 +1,1023 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Caldera de Biomasa</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: Arial, sans-serif; background: #f0f2f5; color: #333; }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Caldera de Biomasa</title>
+<style>
+:root {
+    --bg: #f3f4f7; --card: #ffffff; --card2: #f6f7fb; --line: #e4e6ee;
+    --text: #1d2030; --muted: #6b7088; --accent: #e8590c; --accent-soft: #fff0e6;
+    --ok: #2f9e44; --ok-soft: #e6f6ea; --err: #e03131; --err-soft: #fdecec;
+    --warn: #f08c00; --warn-soft: #fff4de; --blue: #1c7ed6;
+    --shadow: 0 1px 3px rgba(20,24,50,.08), 0 4px 14px rgba(20,24,50,.05);
+    --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #11131a; --card: #1b1e29; --card2: #232736; --line: #2c3144;
+        --text: #e8eaf2; --muted: #98a0bb; --accent: #ff8a3d; --accent-soft: #3a2616;
+        --ok: #51cf66; --ok-soft: #17301d; --err: #ff6b6b; --err-soft: #3a1c1f;
+        --warn: #ffb020; --warn-soft: #3a2d12; --blue: #4dabf7;
+        --shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+       background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.4; }
+button, input, select { font: inherit; color: inherit; }
 
-        /* ── Tab navigation ─────────────────────────────────────── */
-        .tabs {
-            display: flex;
-            background: #1a237e;
-            position: sticky; top: 0; z-index: 100;
-            overflow-x: auto;
-        }
-        .tab {
-            flex: 1; min-width: 80px;
-            padding: 14px 8px;
-            background: none; border: none; color: #9fa8da;
-            font-size: 13px; font-weight: bold; cursor: pointer;
-            border-bottom: 3px solid transparent;
-            white-space: nowrap;
-        }
-        .tab.active { color: #fff; border-bottom-color: #ff6f00; }
-        .tab:hover:not(.active) { color: #c5cae9; }
+/* ── Header ───────────────────────────────────────────── */
+header { position: sticky; top: 0; z-index: 50; background: var(--card); box-shadow: var(--shadow); }
+.top { display: flex; align-items: center; gap: 12px; padding: 10px 16px; max-width: 980px; margin: 0 auto; flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; margin-right: auto; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); display: inline-block; }
+.dot.off { background: var(--err); }
+.seg { display: inline-flex; background: var(--card2); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+.seg button { border: none; background: none; padding: 6px 14px; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted); }
+.seg button.active { background: var(--ok); color: #fff; }
+.seg button.active.manual { background: var(--accent); }
+.seg button:disabled { opacity: .5; cursor: default; }
+nav { display: flex; max-width: 980px; margin: 0 auto; overflow-x: auto; padding: 0 8px; scrollbar-width: none; }
+nav::-webkit-scrollbar { display: none; }
+.tab { flex: 1; min-width: 84px; padding: 11px 10px; background: none; border: none; border-bottom: 3px solid transparent;
+       color: var(--muted); font-weight: 600; font-size: 14px; cursor: pointer; white-space: nowrap; }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
-        /* ── Pages ──────────────────────────────────────────────── */
-        .page { display: none; padding: 16px; max-width: 860px; margin: 0 auto; }
-        .page.active { display: block; }
+main { max-width: 980px; margin: 0 auto; padding: 16px; }
+.page { display: none; }
+.page.active { display: block; }
 
-        /* ── Cards ──────────────────────────────────────────────── */
-        .card {
-            background: #fff; border-radius: 8px;
-            box-shadow: 0 1px 4px rgba(0,0,0,.12);
-            padding: 16px; margin-bottom: 16px;
-        }
-        .card h2 { font-size: 15px; font-weight: bold; margin-bottom: 12px; color: #1a237e; }
+/* ── Banners ──────────────────────────────────────────── */
+.banner { display: none; padding: 12px 16px; border-radius: var(--radius); margin-bottom: 14px; font-weight: 600; font-size: 14px; }
+.banner.show { display: block; }
+.banner.crit { background: var(--err-soft); color: var(--err); border: 1px solid var(--err); }
+.banner.manual { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
 
-        /* ── Status rows ─────────────────────────────────────────── */
-        .row {
-            display: flex; justify-content: space-between; align-items: center;
-            padding: 8px 0; border-bottom: 1px solid #f0f0f0;
-        }
-        .row:last-child { border-bottom: none; }
-        .row-label { font-weight: bold; font-size: 14px; }
-        .badge {
-            padding: 4px 10px; border-radius: 4px;
-            color: #fff; font-weight: bold; font-size: 13px;
-        }
-        .on  { background: #388e3c; }
-        .off { background: #c62828; }
+/* ── Cards ────────────────────────────────────────────── */
+.card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; margin-bottom: 14px; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 12px; font-weight: 700; }
+.card h2 .sub { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 6px; }
+.grid { display: grid; gap: 10px; }
+.g-hero { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.g-temps { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.g-act { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.tile { background: var(--card2); border-radius: 12px; padding: 12px 14px; }
+.tile .lbl { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.tile .val { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tile .val small { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 2px; }
+.tile .val.err { color: var(--err); font-size: 17px; }
+.tile.hero .val { font-size: 32px; }
+.tile.hot { background: var(--accent-soft); }
+.tile .bar { height: 6px; background: var(--line); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+.tile .bar i { display: block; height: 100%; background: var(--blue); width: 0; transition: width .4s; }
 
-        /* ── Temperature grid ───────────────────────────────────── */
-        .temp-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-            gap: 10px;
-        }
-        .temp-cell {
-            background: #f5f7ff; border-radius: 6px;
-            padding: 10px 12px;
-        }
-        .temp-cell .label { font-size: 11px; color: #555; margin-bottom: 4px; }
-        .temp-cell .value { font-size: 22px; font-weight: bold; color: #1a237e; }
-        .temp-cell .value.err { color: #c62828; font-size: 16px; }
+/* ── Chips / status ───────────────────────────────────── */
+.chip { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--card2); border-radius: 12px; padding: 12px 14px; }
+.chip .nm { font-weight: 600; font-size: 14px; }
+.pill { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: var(--err-soft); color: var(--err); }
+.pill.on { background: var(--ok-soft); color: var(--ok); }
+.pending { font-size: 11px; color: var(--warn); margin-left: 6px; display: none; }
 
-        /* ── Buttons ────────────────────────────────────────────── */
-        button {
-            border: none; border-radius: 4px; cursor: pointer;
-            padding: 9px 16px; font-size: 14px; color: #fff;
-            background: #388e3c;
-        }
-        button.danger  { background: #c62828; }
-        button.blue    { background: #1565c0; }
-        button.grey    { background: #546e7a; }
-        button.orange  { background: #e65100; }
-        button:disabled { background: #bdbdbd; cursor: default; }
+/* ── Toggle switch ────────────────────────────────────── */
+.sw { position: relative; width: 52px; height: 30px; flex: none; }
+.sw input { opacity: 0; width: 0; height: 0; position: absolute; }
+.sw span { position: absolute; inset: 0; background: var(--line); border-radius: 999px; cursor: pointer; transition: background .2s; }
+.sw span::after { content: ""; position: absolute; width: 24px; height: 24px; left: 3px; top: 3px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .2s; }
+.sw input:checked + span { background: var(--ok); }
+.sw input:checked + span::after { transform: translateX(22px); }
+.sw input:disabled + span { opacity: .45; cursor: not-allowed; }
+.sw.busy span { animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .5; } }
 
-        /* ── Form controls ──────────────────────────────────────── */
-        .form-row {
-            display: flex; align-items: center; gap: 10px;
-            padding: 8px 0; border-bottom: 1px solid #f0f0f0;
-            flex-wrap: wrap;
-        }
-        .form-row:last-child { border-bottom: none; }
-        .form-row label { min-width: 220px; font-size: 13px; font-weight: bold; }
-        .form-row input[type=number],
-        .form-row input[type=text],
-        .form-row input[type=password] {
-            width: 130px; padding: 6px 8px; border: 1px solid #ccc;
-            border-radius: 4px; font-size: 14px;
-        }
-        .form-row input[type=range] { flex: 1; min-width: 120px; }
-        .form-row .val { min-width: 45px; font-size: 14px; font-weight: bold; color: #1a237e; }
+/* ── Manual ───────────────────────────────────────────── */
+.locked { opacity: .5; pointer-events: none; }
+.chn { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
+.lock-hint { display: none; background: var(--card2); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; color: var(--muted); font-size: 14px; }
+.lock-hint.show { display: block; }
+.servo-big { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; border-radius: 4px; background: var(--line); outline: none; margin: 14px 0; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); border: 3px solid var(--card); box-shadow: 0 1px 4px rgba(0,0,0,.35); cursor: pointer; }
+input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); border: 3px solid var(--card); cursor: pointer; }
+.quick { display: flex; gap: 8px; flex-wrap: wrap; }
 
-        /* ── Manual actuator grid ───────────────────────────────── */
-        .act-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 10px; margin-top: 12px;
-        }
-        .act-cell {
-            background: #f5f7ff; border-radius: 6px; padding: 10px 12px;
-            display: flex; justify-content: space-between; align-items: center;
-        }
-        .act-cell .name { font-size: 13px; font-weight: bold; }
-        .act-btns { display: flex; gap: 6px; }
+/* ── Buttons / forms ──────────────────────────────────── */
+.btn { border: none; border-radius: 10px; padding: 9px 16px; font-weight: 600; font-size: 14px; cursor: pointer; background: var(--ok); color: #fff; }
+.btn.blue { background: var(--blue); } .btn.grey { background: var(--card2); color: var(--text); border: 1px solid var(--line); }
+.btn.danger { background: var(--err); } .btn.orange { background: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.sm { padding: 5px 12px; font-size: 13px; }
+.frow { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.frow:last-child { border-bottom: none; }
+.frow > label { flex: 1 1 200px; font-size: 14px; font-weight: 600; }
+.frow > label small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+.frow input[type=number], .frow input[type=text], .frow input[type=password], select {
+    background: var(--card2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; min-width: 0; width: 150px; }
+.frow select { width: auto; min-width: 150px; max-width: 100%; }
+.frow input[type=range] { flex: 2 1 160px; margin: 8px 0; }
+.val { font-weight: 700; min-width: 48px; }
+.row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); gap: 10px; }
+.row:last-child { border-bottom: none; }
+.mono { font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 16px; }
+.msg { display: none; padding: 10px 14px; border-radius: 10px; font-size: 14px; margin-bottom: 12px; }
+.msg.ok { display: block; background: var(--ok-soft); color: var(--ok); }
+.msg.err { display: block; background: var(--err-soft); color: var(--err); }
+.msg.warn { display: block; background: var(--warn-soft); color: var(--warn); }
 
-        /* ── Alert strip ────────────────────────────────────────── */
-        .alert { padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 12px; }
-        .alert-warn { background: #fff3e0; color: #e65100; }
-        .alert-ok   { background: #e8f5e9; color: #2e7d32; }
-        .alert-err  { background: #ffebee; color: #c62828; }
+/* ── Chart ────────────────────────────────────────────── */
+.chart-wrap { position: relative; width: 100%; }
+.chart-wrap canvas { width: 100%; display: block; touch-action: pan-y; }
+.tip { position: absolute; pointer-events: none; background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow);
+       border-radius: 10px; padding: 8px 10px; font-size: 12px; display: none; z-index: 5; white-space: nowrap; }
+.tip b { display: block; margin-bottom: 4px; }
+.tip i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.lg { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line);
+      background: var(--card2); font-size: 13px; cursor: pointer; user-select: none; }
+.lg i { width: 10px; height: 10px; border-radius: 50%; }
+.lg.off { opacity: .4; text-decoration: line-through; }
+.lg .now { color: var(--muted); font-variant-numeric: tabular-nums; }
+.ranges { display: flex; gap: 6px; flex-wrap: wrap; }
+.ranges button { border: 1px solid var(--line); background: var(--card2); border-radius: 999px; padding: 5px 13px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--muted); }
+.ranges button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chart-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.empty { text-align: center; color: var(--muted); padding: 30px 10px; font-size: 14px; }
 
-        /* ── Logs ───────────────────────────────────────────────── */
-        .logs {
-            height: 280px; overflow-y: auto;
-            background: #1e1e1e; color: #d4d4d4;
-            padding: 10px; font-family: monospace; font-size: 12px;
-            border-radius: 6px; white-space: pre-wrap;
-        }
+/* ── Logs / tables ────────────────────────────────────── */
+.logs { height: 280px; overflow-y: auto; background: #14161d; color: #d4d7e2; padding: 10px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; border-radius: 10px; white-space: pre-wrap; }
+table.dt { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.dt th { background: var(--card2); padding: 8px; text-align: left; font-size: 12px; color: var(--muted); }
+table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
 
-        /* ── Dallas table ───────────────────────────────────────── */
-        .dallas-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .dallas-table th { background: #e8eaf6; padding: 8px; text-align: left; }
-        .dallas-table td { padding: 7px 8px; border-bottom: 1px solid #f0f0f0; }
-        .dallas-table select { padding: 4px 6px; border-radius: 4px; border: 1px solid #ccc; }
-    </style>
+/* ── Toast ────────────────────────────────────────────── */
+#toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(80px); background: #20232f; color: #fff; padding: 11px 18px;
+         border-radius: 12px; font-size: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.35); transition: transform .25s; z-index: 200; max-width: 92vw; }
+#toast.show { transform: translateX(-50%) translateY(0); }
+#toast.err { background: var(--err); }
+</style>
 </head>
 <body>
 
-<!-- ── Navigation ──────────────────────────────────────────────── -->
-<nav class="tabs">
-    <button type="button" class="tab active" onclick="showPage('dashboard',this)">Dashboard</button>
-    <button type="button" class="tab" onclick="showPage('manual',this)">Manual</button>
-    <button type="button" class="tab" onclick="showPage('config',this)">Config</button>
-    <button type="button" class="tab" onclick="showPage('debug',this)">Debug</button>
-</nav>
-
-<!-- ── DASHBOARD ───────────────────────────────────────────────── -->
-<div id="page-dashboard" class="page active">
-
-    <div class="card">
-        <h2>Modo de control</h2>
-        <div class="row">
-            <span class="row-label">Estado</span>
-            <div style="display:flex; align-items:center; gap:10px;">
-                <span class="badge off" id="mode-badge">AUTOMÁTICO</span>
-                <span id="manual-remaining" style="display:none; color:#e65100; font-size:13px; font-weight:bold;"></span>
-            </div>
+<header>
+    <div class="top">
+        <div class="brand"><span class="dot" id="conn-dot"></span> Caldera de Biomasa <span id="conn-txt" style="font-weight:400;font-size:12px;color:var(--muted)"></span></div>
+        <div class="seg" id="mode-seg" role="group" aria-label="Modo de control">
+            <button type="button" id="seg-auto" class="active" onclick="setMode(false)">Automático</button>
+            <button type="button" id="seg-manual" class="manual" onclick="setMode(true)">Manual</button>
         </div>
+    </div>
+    <nav>
+        <button type="button" class="tab active" data-page="dashboard">Panel</button>
+        <button type="button" class="tab" data-page="manual">Manual</button>
+        <button type="button" class="tab" data-page="charts">Gráficas</button>
+        <button type="button" class="tab" data-page="config">Config</button>
+        <button type="button" class="tab" data-page="debug">Diagnóstico</button>
+    </nav>
+</header>
+
+<main>
+<div class="banner crit" id="bn-crit">⚠ TEMPERATURA CRÍTICA — modo de emergencia activo: bombas y ventiladores forzados, aire cerrado. El modo manual está bloqueado hasta que baje.</div>
+<div class="banner crit" id="bn-fault">⚠ Sensor de ida de caldera sin lectura. Modo seguro: bombas forzadas a ON y aire cerrado mientras haya combustión o el hierro esté caliente. Revisa el sensor.</div>
+<div class="banner manual" id="bn-manual">✋ Modo manual: el control automático está parado. Los actuadores solo cambian cuando tú lo ordenas. Vuelve a «Automático» cuando quieras.</div>
+
+<!-- ═══ PANEL ═══ -->
+<section class="page active" id="page-dashboard">
+    <div class="grid g-hero" style="margin-bottom:14px">
+        <div class="tile hero hot"><div class="lbl">Ida caldera</div><div class="val" id="h-supply">--</div></div>
+        <div class="tile hero"><div class="lbl">Gases combustión</div><div class="val" id="h-burn">--</div></div>
+        <div class="tile hero"><div class="lbl" id="h-target-lbl">Control del aire (PID)</div><div class="val" id="h-target">--</div></div>
+        <div class="tile hero"><div class="lbl">Entrada de aire</div><div class="val" id="h-air">--</div><div class="bar"><i id="h-airbar"></i></div></div>
     </div>
 
     <div class="card">
         <h2>Temperaturas</h2>
-        <div class="temp-grid">
-            <div class="temp-cell"><div class="label">Ida caldera</div>     <div class="value" id="t-boiler-supply">--</div></div>
-            <div class="temp-cell"><div class="label">Retorno caldera</div> <div class="value" id="t-boiler-return">--</div></div>
-            <div class="temp-cell"><div class="label">Hierro caldera</div>  <div class="value" id="t-boiler-iron">--</div></div>
-            <div class="temp-cell"><div class="label">Ida suelo</div>       <div class="value" id="t-floor-supply">--</div></div>
-            <div class="temp-cell"><div class="label">Retorno suelo</div>   <div class="value" id="t-floor-return">--</div></div>
-            <div class="temp-cell"><div class="label">Ida mezcla</div>      <div class="value" id="t-mix-supply">--</div></div>
-            <div class="temp-cell"><div class="label">Ambiente abajo</div>  <div class="value" id="t-ambient-low">--</div></div>
-            <div class="temp-cell"><div class="label">Ambiente arriba</div> <div class="value" id="t-ambient-high">--</div></div>
-            <div class="temp-cell"><div class="label">Combustión (gases)</div><div class="value" id="t-burning">--</div></div>
+        <div class="grid g-temps">
+            <div class="tile"><div class="lbl">Ida caldera</div><div class="val" id="t-boiler-supply">--</div></div>
+            <div class="tile"><div class="lbl">Retorno caldera</div><div class="val" id="t-boiler-return">--</div></div>
+            <div class="tile"><div class="lbl">Hierro caldera</div><div class="val" id="t-boiler-iron">--</div></div>
+            <div class="tile"><div class="lbl">Ida suelo</div><div class="val" id="t-floor-supply">--</div></div>
+            <div class="tile"><div class="lbl">Retorno suelo</div><div class="val" id="t-floor-return">--</div></div>
+            <div class="tile"><div class="lbl">Ida mezcla</div><div class="val" id="t-mix-supply">--</div></div>
+            <div class="tile"><div class="lbl">Ambiente abajo</div><div class="val" id="t-ambient-low">--</div></div>
+            <div class="tile"><div class="lbl">Ambiente arriba</div><div class="val" id="t-ambient-high">--</div></div>
         </div>
     </div>
 
     <div class="card">
         <h2>Actuadores</h2>
-        <div class="row"><span class="row-label">Bomba caldera</span>
-            <div style="display:flex; gap:8px; align-items:center;">
-                <span class="badge off" id="boiler-pump-status">--</span>
-                <span id="boiler-pump-pending" style="display:none; font-size:11px; color:#f57c00;">(pendiente)</span>
-            </div>
-        </div>
-        <div class="row"><span class="row-label">Bomba calefacción</span>
-            <div style="display:flex; gap:8px; align-items:center;">
-                <span class="badge off" id="heating-pump-status">--</span>
-                <span id="heating-pump-pending" style="display:none; font-size:11px; color:#f57c00;">(pendiente)</span>
-            </div>
-        </div>
-        <div class="row"><span class="row-label">Ventiladores</span>
-            <div style="display:flex; gap:8px; align-items:center;">
-                <span class="badge off" id="fans-status">--</span>
-                <span id="fans-pending" style="display:none; font-size:11px; color:#f57c00;">(pendiente)</span>
-            </div>
-        </div>
-        <div class="row"><span class="row-label">Relé auxiliar</span>
-            <div style="display:flex; gap:8px; align-items:center;">
-                <span class="badge off" id="other-status">--</span>
-                <span id="other-pending" style="display:none; font-size:11px; color:#f57c00;">(pendiente)</span>
-            </div>
-        </div>
-        <div class="row"><span class="row-label">Entrada de aire</span>
-            <span style="font-weight:bold;" id="air-intake-value">--</span>%
+        <div class="grid g-act">
+            <div class="chip"><span class="nm">Bomba caldera <span class="pending" id="p-boiler-pump">(pendiente)</span></span><span class="pill" id="s-boiler-pump">--</span></div>
+            <div class="chip"><span class="nm">Bomba calefacción <span class="pending" id="p-heating-pump">(pendiente)</span></span><span class="pill" id="s-heating-pump">--</span></div>
+            <div class="chip"><span class="nm">Ventiladores <span class="pending" id="p-fans">(pendiente)</span></span><span class="pill" id="s-fans">--</span></div>
+            <div class="chip"><span class="nm">Relé auxiliar <span class="pending" id="p-other">(pendiente)</span></span><span class="pill" id="s-other">--</span></div>
         </div>
     </div>
-
-</div>
-
-<!-- ── MANUAL ──────────────────────────────────────────────────── -->
-<div id="page-manual" class="page">
 
     <div class="card">
-        <h2>Control manual</h2>
-
-        <div class="row">
-            <span class="row-label">Estado</span>
-            <div style="display:flex; align-items:center; gap:10px;">
-                <span class="badge off" id="manual-badge">AUTOMÁTICO</span>
-                <span id="manual-remaining2" style="display:none; color:#e65100; font-size:13px; font-weight:bold;"></span>
-            </div>
-        </div>
-
-        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:14px;">
-            <button type="button" id="btn-manual-on" class="orange" onclick="setManualMode(true)">Activar modo manual</button>
-            <button type="button" id="btn-manual-off" class="danger" style="display:none;" onclick="setManualMode(false)">Volver a automático</button>
-            <span style="font-size:13px; color:#555;">
-                Timeout:&nbsp;<input type="number" id="manual-timeout-input" value="10" min="1" max="120"
-                    style="width:55px; padding:5px;">&nbsp;min
-            </span>
-        </div>
+        <div class="chart-head"><h2 style="margin:0">Última hora <span class="sub">ida caldera (izq.) · gases (dcha.)</span></h2>
+            <button type="button" class="btn grey sm" onclick="gotoPage('charts')">Ver gráficas →</button></div>
+        <div class="chart-wrap" id="mini-wrap"><canvas id="mini-chart"></canvas><div class="tip"></div></div>
     </div>
+</section>
 
-    <div id="manual-controls" style="display:none;">
-        <div class="alert alert-warn">
-            ⚠ Modo manual activo — los cambios son inmediatos (sin debounce). El sistema vuelve a automático al agotar el timeout.
-        </div>
+<!-- ═══ MANUAL ═══ -->
+<section class="page" id="page-manual">
+    <div class="lock-hint" id="manual-lock">Los controles están bloqueados en modo automático. Pulsa <b>Manual</b> arriba para tomar el mando. Seguirás en manual hasta que vuelvas a pulsar <b>Automático</b>.</div>
 
+    <div id="manual-ctrl" class="locked">
         <div class="card">
             <h2>Relés</h2>
-            <div class="act-grid">
-                <div class="act-cell">
-                    <span class="name">Bomba caldera</span>
-                    <div class="act-btns">
-                        <button type="button" onclick="sendActuator({boiler_pump:true})">ON</button>
-                        <button type="button" class="danger" onclick="sendActuator({boiler_pump:false})">OFF</button>
-                    </div>
-                </div>
-                <div class="act-cell">
-                    <span class="name">Bomba calefacción</span>
-                    <div class="act-btns">
-                        <button type="button" onclick="sendActuator({heating_pump:true})">ON</button>
-                        <button type="button" class="danger" onclick="sendActuator({heating_pump:false})">OFF</button>
-                    </div>
-                </div>
-                <div class="act-cell">
-                    <span class="name">Ventiladores</span>
-                    <div class="act-btns">
-                        <button type="button" onclick="sendActuator({fans:true})">ON</button>
-                        <button type="button" class="danger" onclick="sendActuator({fans:false})">OFF</button>
-                    </div>
-                </div>
-                <div class="act-cell">
-                    <span class="name">Relé auxiliar</span>
-                    <div class="act-btns">
-                        <button type="button" onclick="sendActuator({other:true})">ON</button>
-                        <button type="button" class="danger" onclick="sendActuator({other:false})">OFF</button>
-                    </div>
-                </div>
+            <div class="grid g-act">
+                <div class="chip"><span class="nm">Bomba caldera<small class="chn" data-role="boiler_pump"></small></span><label class="sw" id="sw-boiler-pump"><input type="checkbox" onchange="toggleRelay('boiler_pump', this)"><span></span></label></div>
+                <div class="chip"><span class="nm">Bomba calefacción<small class="chn" data-role="heating_pump"></small></span><label class="sw" id="sw-heating-pump"><input type="checkbox" onchange="toggleRelay('heating_pump', this)"><span></span></label></div>
+                <div class="chip"><span class="nm">Ventiladores<small class="chn" data-role="fans"></small></span><label class="sw" id="sw-fans"><input type="checkbox" onchange="toggleRelay('fans', this)"><span></span></label></div>
+                <div class="chip"><span class="nm">Relé auxiliar<small class="chn" data-role="other"></small></span><label class="sw" id="sw-other"><input type="checkbox" onchange="toggleRelay('other', this)"><span></span></label></div>
             </div>
         </div>
 
         <div class="card">
-            <h2>Servo entrada de aire</h2>
-            <div class="form-row">
-                <label>Posición</label>
-                <input type="range" id="manual-servo" min="0" max="100" value="0"
-                    oninput="document.getElementById('manual-servo-val').textContent = this.value">
-                <span class="val" id="manual-servo-val">0</span>%
-                <button type="button" class="blue"
-                    onclick="sendActuator({servo: parseInt(document.getElementById('manual-servo').value)})">
-                    Aplicar
-                </button>
+            <h2>Entrada de aire (servo)</h2>
+            <div style="display:flex;align-items:baseline;gap:10px;justify-content:space-between;flex-wrap:wrap">
+                <div><span class="servo-big" id="servo-val">0</span><span style="font-size:20px;color:var(--muted)"> %</span></div>
+                <div style="font-size:13px;color:var(--muted)">Posición real: <b id="servo-real">--</b> %</div>
+            </div>
+            <input type="range" id="servo-range" min="0" max="100" step="1" value="0">
+            <div class="quick">
+                <button type="button" class="btn grey sm" onclick="setServo(0)">Cerrar 0%</button>
+                <button type="button" class="btn grey sm" onclick="setServo(25)">25%</button>
+                <button type="button" class="btn grey sm" onclick="setServo(50)">50%</button>
+                <button type="button" class="btn grey sm" onclick="setServo(75)">75%</button>
+                <button type="button" class="btn grey sm" onclick="setServo(100)">Abrir 100%</button>
             </div>
         </div>
     </div>
 
-</div>
-
-<!-- ── CONFIG ──────────────────────────────────────────────────── -->
-<div id="page-config" class="page">
-
-    <div id="cfg-msg" style="display:none;"></div>
-
     <div class="card">
-        <h2>Temperatura objetivo</h2>
-        <div class="form-row">
-            <label>Target combustión</label>
-            <input type="range" id="cfg-target-temp" min="30" max="150" step="1" value="85"
-                oninput="document.getElementById('cfg-target-val').textContent = this.value">
-            <span class="val" id="cfg-target-val">85</span> °C
+        <h2>Autotest</h2>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:10px">Invierte cada relé durante 1 s (y lo devuelve a su estado), prueba la pantalla, lee el termopar y cuenta los Dallas. Dura unos 8 s y el control está parado mientras tanto (por eso exige modo manual). Comprueba a ojo que cada dispositivo reacciona.</p>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <button type="button" class="btn orange" id="btn-selftest" onclick="runSelfTest()">Ejecutar autotest</button>
+            <span id="selftest-step" style="font-size:13px;color:var(--warn)"></span>
         </div>
+        <div id="selftest-out" style="display:none;margin-top:12px"></div>
     </div>
 
     <div class="card">
-        <h2>Umbrales de temperatura</h2>
-        <div class="form-row">
-            <label>Burning threshold (°C)</label>
-            <input type="number" id="cfg-burn-thresh" step="0.5">
+        <h2>Lectura en vivo</h2>
+        <div class="grid g-temps">
+            <div class="tile"><div class="lbl">Ida caldera</div><div class="val" id="m-supply">--</div></div>
+            <div class="tile"><div class="lbl">Gases combustión</div><div class="val" id="m-burn">--</div></div>
+            <div class="tile"><div class="lbl">Hierro caldera</div><div class="val" id="m-iron">--</div></div>
+            <div class="tile"><div class="lbl">Retorno suelo</div><div class="val" id="m-floor">--</div></div>
         </div>
-        <div class="form-row">
-            <label>Agua caliente (°C)</label>
-            <input type="number" id="cfg-water-thresh" step="0.5">
+    </div>
+</section>
+
+<!-- ═══ GRÁFICAS ═══ -->
+<section class="page" id="page-charts">
+    <div class="card">
+        <div class="chart-head">
+            <h2 style="margin:0">Histórico de temperaturas</h2>
+            <div class="ranges" id="ranges"></div>
         </div>
-        <div class="form-row">
-            <label>Agua crítica (°C)</label>
-            <input type="number" id="cfg-water-crit" step="0.5">
-        </div>
-        <div class="form-row">
-            <label>Hierro caldera threshold (°C)</label>
-            <input type="number" id="cfg-iron-thresh" step="0.5">
-        </div>
-        <div class="form-row">
-            <label>Delta suelo mín (°C)</label>
-            <input type="number" id="cfg-floor-delta" step="0.5">
-        </div>
+        <div class="chart-wrap" id="big-wrap"><canvas id="big-chart"></canvas><div class="tip"></div></div>
+        <div class="legend" id="legend"></div>
+        <p style="font-size:12px;color:var(--muted);margin-top:8px">
+            1 muestra/min durante la última hora; después 1 muestra cada 5 min (media) hasta 24 h.
+            Los datos viven en la RAM del ESP32: se pierden al reiniciar. Franjas inferiores: relés activos y modo manual.
+        </p>
+    </div>
+</section>
+
+<!-- ═══ CONFIG ═══ -->
+<section class="page" id="page-config">
+    <div id="cfg-msg" class="msg"></div>
+
+    <div class="card">
+        <h2>Objetivo del PID (entrada de aire)</h2>
+        <div class="frow"><label>Temperatura a regular<small>El PID abre/cierra el aire para llevar ESTA temperatura al objetivo</small></label>
+            <select id="cfg-pid-source" onchange="updatePidWarn()"></select></div>
+        <div class="frow"><label>Objetivo<small>En °C, de la temperatura elegida arriba</small></label>
+            <input type="range" id="cfg-target-temp" min="30" max="300" step="1" value="85" oninput="document.getElementById('cfg-target-val').textContent=this.value; updatePidWarn()">
+            <span class="val"><span id="cfg-target-val">85</span> °C</span></div>
+        <div id="cfg-pid-warn" class="msg warn" style="margin-top:8px"></div>
     </div>
 
     <div class="card">
-        <h2>PID</h2>
-        <div class="form-row">
-            <label>Kp</label>
-            <input type="number" id="cfg-kp" step="0.01">
-        </div>
-        <div class="form-row">
-            <label>Ki</label>
-            <input type="number" id="cfg-ki" step="0.001">
-        </div>
-        <div class="form-row">
-            <label>Kd</label>
-            <input type="number" id="cfg-kd" step="0.01">
-        </div>
-        <div class="form-row">
-            <label>Autoajuste PID</label>
-            <button type="button" id="btn-autotune" onclick="toggleAutotune()">Iniciar autoajuste</button>
-            <span id="autotune-status" style="font-size:13px; color:#666;"></span>
-        </div>
+        <h2>Umbrales</h2>
+        <div class="frow"><label>Detección de combustión (°C)<small>Termopar de gases: «quemando» por encima de este valor; se apaga 5 °C por debajo (histéresis)</small></label><input type="number" id="cfg-burn-thresh" step="0.5" oninput="updatePidWarn()"></div>
+        <div class="frow"><label>Agua caliente (°C)</label><input type="number" id="cfg-water-thresh" step="0.5"></div>
+        <div class="frow"><label>Agua crítica (°C)<small>Dispara el modo de emergencia</small></label><input type="number" id="cfg-water-crit" step="0.5"></div>
+        <div class="frow"><label>Hierro caldera (°C)<small>Mantiene la bomba mientras esté caliente</small></label><input type="number" id="cfg-iron-thresh" step="0.5"></div>
+        <div class="frow"><label>Delta suelo mínimo (°C)</label><input type="number" id="cfg-floor-delta" step="0.5"></div>
+    </div>
+
+    <div class="card">
+        <h2>PID del aire</h2>
+        <div class="frow"><label>Kp</label><input type="number" id="cfg-kp" step="0.01"></div>
+        <div class="frow"><label>Ki</label><input type="number" id="cfg-ki" step="0.001"></div>
+        <div class="frow"><label>Kd</label><input type="number" id="cfg-kd" step="0.01"></div>
+        <div class="frow"><label>Autoajuste<small>Requiere combustión activa y modo automático</small></label>
+            <button type="button" class="btn blue sm" id="btn-autotune" onclick="toggleAutotune()">Iniciar autoajuste</button>
+            <span id="autotune-status" style="font-size:13px;color:var(--warn)"></span></div>
     </div>
 
     <div class="card">
         <h2>Servo</h2>
-        <div class="form-row">
-            <label>Posición mínima</label>
-            <input type="number" id="cfg-servo-min" min="0" max="180">
-        </div>
-        <div class="form-row">
-            <label>Posición máxima</label>
-            <input type="number" id="cfg-servo-max" min="0" max="180">
-        </div>
+        <div class="frow"><label>Posición mínima (0 % aire)<small>Grados</small></label><input type="number" id="cfg-servo-min" min="0" max="180"></div>
+        <div class="frow"><label>Posición máxima (100 % aire)<small>Grados</small></label><input type="number" id="cfg-servo-max" min="0" max="180"></div>
+    </div>
+
+    <div class="card">
+        <h2>Salidas de relé</h2>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:8px">Elige qué canal físico (GPIO) controla cada función. Si el canal ya lo usa otra función, se intercambian. Se aplica al instante y queda guardado: comprueba el resultado en la pestaña Manual, con la caldera parada si es posible.</p>
+        <div id="relay-map"><div class="empty">Cargando…</div></div>
     </div>
 
     <div class="card">
         <h2>Tiempos</h2>
-        <div class="form-row">
-            <label>Debounce relés (min)</label>
-            <input type="number" id="cfg-debounce" min="0" max="60">
-        </div>
-        <div class="form-row">
-            <label>Timeout modo manual (min)</label>
-            <input type="number" id="cfg-manual-tmo" min="1" max="120">
-        </div>
+        <div class="frow"><label>Debounce de relés (min)<small>Tiempo mínimo entre cambios en automático</small></label><input type="number" id="cfg-debounce" min="0" max="60"></div>
     </div>
 
     <div class="card">
         <h2>MQTT / Home Assistant</h2>
-        <div class="form-row">
-            <label>Servidor</label>
-            <input type="text" id="cfg-mqtt-server" style="width:200px;">
-        </div>
-        <div class="form-row">
-            <label>Puerto</label>
-            <input type="number" id="cfg-mqtt-port">
-        </div>
-        <div class="form-row">
-            <label>Usuario</label>
-            <input type="text" id="cfg-mqtt-user" style="width:160px;">
-        </div>
-        <div class="form-row">
-            <label>Contraseña</label>
-            <input type="password" id="cfg-mqtt-pass" style="width:160px;" placeholder="(dejar vacío para no cambiar)">
-        </div>
-        <div class="form-row">
-            <label>Base topic</label>
-            <input type="text" id="cfg-mqtt-topic" style="width:160px;">
-        </div>
+        <div class="frow"><label>Servidor</label><input type="text" id="cfg-mqtt-server"></div>
+        <div class="frow"><label>Puerto</label><input type="number" id="cfg-mqtt-port"></div>
+        <div class="frow"><label>Usuario</label><input type="text" id="cfg-mqtt-user"></div>
+        <div class="frow"><label>Contraseña<small>Vacío = no cambiar</small></label><input type="password" id="cfg-mqtt-pass"></div>
+        <div class="frow"><label>Base topic</label><input type="text" id="cfg-mqtt-topic"></div>
     </div>
 
-    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">
-        <button type="button" onclick="saveConfig()">Guardar cambios</button>
-        <button type="button" class="danger" onclick="if(confirm('¿Restaurar todos los valores por defecto?')) resetConfig()">
-            Restaurar valores por defecto
-        </button>
+    <div class="actions">
+        <button type="button" class="btn" onclick="saveConfig()">Guardar cambios</button>
+        <button type="button" class="btn danger" onclick="if(confirm('¿Restaurar todos los valores por defecto?')) resetConfig()">Restaurar valores por defecto</button>
     </div>
+</section>
 
-</div>
-
-<!-- ── DEBUG ───────────────────────────────────────────────────── -->
-<div id="page-debug" class="page">
-
+<!-- ═══ DIAGNÓSTICO ═══ -->
+<section class="page" id="page-debug">
     <div class="card">
         <h2>Backup / Restore</h2>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-            <button type="button" class="grey" onclick="exportConfig()">Exportar config</button>
-            <label style="cursor:pointer;">
-                <input type="file" id="import-file" accept=".json" style="display:none;" onchange="importConfig(this)">
-                <span style="background:#546e7a; color:#fff; padding:9px 16px; border-radius:4px; font-size:14px; cursor:pointer; display:inline-block;">
-                    Importar config
-                </span>
-            </label>
-            <span id="import-status" style="display:none; padding:5px 10px; border-radius:4px; font-size:13px;"></span>
+        <div class="actions" style="margin:0;align-items:center">
+            <button type="button" class="btn grey" onclick="exportConfig()">Exportar config</button>
+            <label class="btn grey" style="cursor:pointer">Importar config<input type="file" id="import-file" accept=".json" style="display:none" onchange="importConfig(this)"></label>
+            <span id="import-status" class="mono"></span>
         </div>
     </div>
 
     <div class="card">
         <h2>Display OLED</h2>
-        <div class="row">
-            <span class="row-label">Disponible</span>
-            <span class="badge off" id="disp-badge">--</span>
+        <div class="row"><span>Disponible</span><span class="pill" id="disp-badge">--</span></div>
+        <div class="row"><span>Tipo configurado</span><span class="mono" id="disp-type">--</span></div>
+        <div class="row"><span>Pines (SDA / SCL)</span><span class="mono" id="disp-pins">--</span></div>
+        <div id="disp-tip" class="msg warn" style="margin-top:10px"></div>
+        <div class="actions" style="margin:12px 0 0">
+            <button type="button" class="btn blue" onclick="displayTest()">Dibujar test</button>
+            <button type="button" class="btn grey" onclick="i2cScan()">Escanear I2C</button>
         </div>
-        <div class="row">
-            <span class="row-label">Tipo configurado</span>
-            <span id="disp-type" style="font-family:monospace;">--</span>
-        </div>
-        <div class="row">
-            <span class="row-label">Pines (SDA / SCL)</span>
-            <span id="disp-pins" style="font-family:monospace;">--</span>
-        </div>
-        <div id="disp-tip" style="display:none;" class="alert alert-warn" style="margin-top:8px;"></div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
-            <button type="button" class="blue" onclick="displayTest()">Dibujar test</button>
-            <button type="button" class="grey" onclick="i2cScan()">Escanear I2C</button>
-        </div>
-        <div id="i2c-result" style="display:none; margin-top:10px; font-family:monospace; font-size:13px; background:#f5f7ff; border-radius:4px; padding:8px;"></div>
+        <div id="i2c-result" class="mono" style="display:none;margin-top:10px;background:var(--card2);border-radius:8px;padding:8px;white-space:pre-wrap"></div>
     </div>
 
     <div class="card">
         <h2>MQTT / Home Assistant</h2>
-        <div class="row">
-            <span class="row-label">Estado</span>
-            <span class="badge off" id="mqtt-badge">--</span>
-        </div>
-        <div class="row">
-            <span class="row-label">Servidor</span>
-            <span id="mqtt-server-info" style="font-family:monospace; font-size:13px;">--</span>
-        </div>
-        <div class="row">
-            <span class="row-label">Mensajes publicados</span>
-            <span id="mqtt-pub-count">--</span>
-        </div>
-        <div class="row">
-            <span class="row-label">Último envío</span>
-            <span id="mqtt-last-pub">--</span>
-        </div>
-        <div class="row" id="mqtt-retry-row" style="display:none;">
-            <span class="row-label">Siguiente reintento</span>
-            <span id="mqtt-next-retry" style="color:#e65100; font-weight:bold;">--</span>
-        </div>
-        <div class="row" id="mqtt-err-row" style="display:none;">
-            <span class="row-label">Último error (rc)</span>
-            <span id="mqtt-last-err" style="color:#c62828; font-size:13px;">--</span>
-        </div>
-        <div style="margin-top:12px;">
-            <button type="button" class="blue" onclick="mqttRetry()">Forzar reconexión</button>
-        </div>
+        <div class="row"><span>Estado</span><span class="pill" id="mqtt-badge">--</span></div>
+        <div class="row"><span>Servidor</span><span class="mono" id="mqtt-server-info">--</span></div>
+        <div class="row"><span>Mensajes publicados</span><span id="mqtt-pub-count">--</span></div>
+        <div class="row"><span>Último envío</span><span id="mqtt-last-pub">--</span></div>
+        <div class="row" id="mqtt-retry-row" style="display:none"><span>Siguiente reintento</span><b id="mqtt-next-retry" style="color:var(--warn)">--</b></div>
+        <div class="row" id="mqtt-err-row" style="display:none"><span>Último error</span><span id="mqtt-last-err" style="color:var(--err);font-size:13px">--</span></div>
+        <div class="actions" style="margin:12px 0 0"><button type="button" class="btn blue" onclick="mqttRetry()">Forzar reconexión</button></div>
     </div>
 
     <div class="card">
         <h2>Termopar MAX6675</h2>
-        <div class="row">
-            <span class="row-label">Temperatura gases combustión</span>
-            <span style="font-weight:bold; font-size:18px;" id="tc-temp">--</span> °C
-        </div>
+        <div class="row"><span>Temperatura gases</span><span><b style="font-size:20px" id="tc-temp">--</b> °C</span></div>
     </div>
 
     <div class="card">
         <h2>Sensores Dallas 1-Wire</h2>
-        <div style="display:flex; gap:8px; align-items:center; margin-bottom:12px;">
-            <button type="button" class="blue" id="btn-scan" onclick="scanBus()">Re-escanear bus</button>
-            <span id="dallas-count" style="font-size:13px; color:#555;"></span>
+        <div class="actions" style="margin:0 0 12px;align-items:center">
+            <button type="button" class="btn blue" id="btn-scan" onclick="scanBus()">Re-escanear bus</button>
+            <span id="dallas-count" style="font-size:13px;color:var(--muted)"></span>
         </div>
-        <div style="overflow-x:auto;">
-            <table class="dallas-table">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Address</th>
-                        <th style="text-align:right;">Temp (°C)</th>
-                        <th>Rol actual</th>
-                        <th>Asignar</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody id="dallas-tbody">
-                    <tr><td colspan="6" style="padding:10px; color:#999;">Cargando...</td></tr>
-                </tbody>
-            </table>
+        <div style="overflow-x:auto">
+            <table class="dt"><thead><tr><th>#</th><th>Dirección</th><th style="text-align:right">Temp (°C)</th><th>Rol actual</th><th>Asignar</th><th></th></tr></thead>
+            <tbody id="dallas-tbody"><tr><td colspan="6" style="padding:10px;color:var(--muted)">Cargando...</td></tr></tbody></table>
         </div>
+    </div>
+
+    <div class="card">
+        <h2>Sistema</h2>
+        <div class="row"><span>Tiempo encendido</span><span id="sys-uptime">--</span></div>
+        <div class="row"><span>Último reinicio</span><span id="sys-reset" style="text-align:right;font-size:13px">--</span></div>
+        <div class="actions" style="margin:12px 0 0"><button type="button" class="btn danger" onclick="if(confirm('¿Reiniciar el ESP32? Se pasará a modo automático.')) fetch('/api/reset',{method:'POST'}).then(()=>toast('Reiniciando…'))">Reiniciar</button></div>
     </div>
 
     <div class="card">
         <h2>Logs del sistema</h2>
         <div class="logs" id="logs">Cargando...</div>
     </div>
+</section>
+</main>
 
-</div>
+<div id="toast"></div>
 
 <script>
-    // ── Tab navigation ──────────────────────────────────────────────
-    function showPage(id, tabEl) {
-        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.getElementById('page-' + id).classList.add('active');
-        if (tabEl) tabEl.classList.add('active');
+'use strict';
+const $ = id => document.getElementById(id);
+
+/* ── Toast ─────────────────────────────────────────────────────── */
+let toastT;
+function toast(msg, isErr) {
+    const t = $('toast');
+    t.textContent = msg; t.className = 'show' + (isErr ? ' err' : '');
+    clearTimeout(toastT); toastT = setTimeout(() => t.className = '', 3200);
+}
+
+/* ── Navigation ────────────────────────────────────────────────── */
+function gotoPage(id) {
+    document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + id));
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.page === id));
+    try { localStorage.setItem('page', id); } catch (e) {}
+    if (id === 'charts' || id === 'dashboard') loadHistory();
+    if (id === 'debug') { updateDallas(); updateLogs(); updateMqttStatus(); }
+    requestAnimationFrame(redrawCharts);
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => gotoPage(t.dataset.page)));
+
+/* ── Helpers ───────────────────────────────────────────────────── */
+function fmt(v, d = 1) { return (v == null || isNaN(v)) ? null : Number(v).toFixed(d); }
+function setTemp(id, v) {
+    const el = $(id); if (!el) return;
+    const s = fmt(v);
+    if (s == null) { el.innerHTML = 'ERR'; el.className = 'val err'; }
+    else { el.innerHTML = s + '<small>°C</small>'; el.className = 'val'; }
+}
+function setPill(id, on) { const el = $(id); if (!el) return; el.textContent = on ? 'ON' : 'OFF'; el.className = 'pill' + (on ? ' on' : ''); }
+function setField(id, val, isText) { const el = $(id); if (!el) return; if (isText) el.textContent = val; else el.value = val; }
+function fmtDur(s) { const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? h + ' h ' + m + ' min' : m + ' min ' + (s % 60) + ' s'; }
+async function api(url, method, body) {
+    const opt = { method: method || 'GET' };
+    if (body !== undefined) { opt.headers = { 'Content-Type': 'application/json' }; opt.body = JSON.stringify(body); }
+    const r = await fetch(url, opt);
+    let d = null; try { d = await r.json(); } catch (e) {}
+    return { ok: r.ok, status: r.status, data: d };
+}
+
+/* ── Status polling ────────────────────────────────────────────── */
+let SYS = { burning_temp_threshold: 100 };
+// Same order as the firmware history channels (also the PID source index)
+const PID_SOURCES = ['Ida caldera', 'Retorno caldera', 'Hierro caldera', 'Ida suelo', 'Retorno suelo', 'Ida mezcla', 'Ambiente abajo', 'Ambiente arriba', 'Gases de combustión (termopar)'];
+$('cfg-pid-source').innerHTML = PID_SOURCES.map((l, i) => `<option value="${i}">${l}</option>`).join('');
+let ST = null;               // last status
+let manualMode = false;
+let userChangingMode = false;
+let failCount = 0;
+let servoDragging = false, servoBusy = false;
+
+const RELAYS = { boiler_pump: 'boiler-pump', heating_pump: 'heating-pump', fans: 'fans', other: 'other' };
+
+function applyStatus(d) {
+    ST = d;
+    setTemp('t-boiler-supply', d.boiler_supply); setTemp('t-boiler-return', d.boiler_return);
+    setTemp('t-boiler-iron', d.boiler_iron);     setTemp('t-floor-supply', d.floor_supply);
+    setTemp('t-floor-return', d.floor_return);   setTemp('t-mix-supply', d.mix_supply);
+    setTemp('t-ambient-low', d.ambient_low);     setTemp('t-ambient-high', d.ambient_high);
+    setTemp('h-supply', d.boiler_supply); setTemp('h-burn', d.burning_temp);
+    setTemp('m-supply', d.boiler_supply); setTemp('m-burn', d.burning_temp);
+    setTemp('m-iron', d.boiler_iron);     setTemp('m-floor', d.floor_return);
+    { const si = d.pid_source != null ? d.pid_source : 8, name = PID_SOURCES[si] || '';
+      $('h-target-lbl').textContent = 'PID aire · ' + name.replace(' (termopar)', '');
+      $('h-target').innerHTML = (d.pid_value != null ? fmt(d.pid_value, 1) : 'ERR') + ' → ' + fmt(d.target_burning_temp, 0) + '<small>°C</small>'; }
+    $('h-air').innerHTML = d.air_intake + '<small>%</small>';
+    $('h-airbar').style.width = d.air_intake + '%';
+
+    for (const [key, base] of Object.entries(RELAYS)) {
+        const on = d[key], want = d[key + '_desired'];
+        setPill('s-' + base, on);
+        const p = $('p-' + base); if (p) p.style.display = (on !== want && !d.manual_mode) ? 'inline' : 'none';
+        const sw = $('sw-' + base);
+        if (sw && !sw.classList.contains('busy')) sw.querySelector('input').checked = on;
     }
 
-    // ── System constants (loaded from backend) ──────────────────────
-    let SYS = { target_temp_min: 30, target_temp_max: 150, one_wire_pin: '?' };
+    // Servo
+    $('servo-real').textContent = d.air_intake;
+    if (!servoDragging && !servoBusy) { $('servo-range').value = d.air_intake; $('servo-val').textContent = d.air_intake; }
 
-    fetch('/api/config')
-        .then(r => r.json())
-        .then(cfg => {
-            SYS = cfg;
-            const sl = document.getElementById('cfg-target-temp');
-            sl.min = cfg.target_temp_min;
-            sl.max = cfg.target_temp_max;
-            // Populate config fields
-            setField('cfg-target-temp',  cfg.target_burning_temp);
-            setField('cfg-target-val',   cfg.target_burning_temp, true);
-            setField('cfg-burn-thresh',  cfg.burning_temp_threshold);
-            setField('cfg-water-thresh', cfg.boiler_water_threshold);
-            setField('cfg-water-crit',   cfg.boiler_water_critical);
-            setField('cfg-iron-thresh',  cfg.boiler_iron_threshold);
-            setField('cfg-floor-delta',  cfg.floor_delta_threshold);
-            setField('cfg-kp',           cfg.pid_kp);
-            setField('cfg-ki',           cfg.pid_ki);
-            setField('cfg-kd',           cfg.pid_kd);
-            setField('cfg-servo-min',    cfg.servo_min);
-            setField('cfg-servo-max',    cfg.servo_max);
-            setField('cfg-debounce',     cfg.relay_debounce_min);
-            setField('cfg-manual-tmo',   cfg.manual_timeout_min);
-            setField('cfg-mqtt-server',  cfg.mqtt_server);
-            setField('cfg-mqtt-port',    cfg.mqtt_port);
-            setField('cfg-mqtt-user',    cfg.mqtt_user);
-            setField('cfg-mqtt-topic',   cfg.mqtt_base_topic);
-        })
-        .catch(() => {});
+    // PID / autotune
+    $('btn-autotune').textContent = d.auto_tuning ? 'Cancelar autoajuste' : 'Iniciar autoajuste';
+    $('autotune-status').textContent = d.auto_tuning ? '⚙ en proceso' : '';
+    const sl = $('cfg-target-temp');
+    if (document.activeElement !== sl) { sl.value = d.target_burning_temp; $('cfg-target-val').textContent = Math.round(d.target_burning_temp); }
+    if (d.uptime_s != null) $('sys-uptime').textContent = fmtDur(d.uptime_s);
+    if (d.reset_reason) $('sys-reset').textContent = d.reset_reason;
 
-    function setField(id, val, isText) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        if (isText) el.textContent = val;
-        else el.value = val;
+    // Mode
+    if (manualMode && !d.manual_mode && !userChangingMode)
+        toast(d.killswitch_active ? '⚠ Modo manual cancelado: temperatura crítica' : 'El modo manual se desactivó', true);
+    manualMode = d.manual_mode;
+    applyMode(d.manual_mode, d.killswitch_active);
+}
+
+function applyMode(manual, crit) {
+    $('seg-auto').classList.toggle('active', !manual);
+    $('seg-manual').classList.toggle('active', manual);
+    $('seg-manual').disabled = crit && !manual;
+    $('bn-manual').classList.toggle('show', manual);
+    $('bn-crit').classList.toggle('show', !!crit);
+    $('bn-fault').classList.toggle('show', !!(ST && ST.water_sensor_fault));
+    $('manual-ctrl').classList.toggle('locked', !manual);
+    $('manual-lock').classList.toggle('show', !manual);
+    $('btn-selftest').disabled = !manual || selfTestBusy;
+}
+
+async function pollStatus() {
+    try {
+        const r = await fetch('/api/status');
+        applyStatus(await r.json());
+        failCount = 0;
+        $('conn-dot').className = 'dot'; $('conn-txt').textContent = '';
+    } catch (e) {
+        if (++failCount >= 2) { $('conn-dot').className = 'dot off'; $('conn-txt').textContent = 'sin conexión'; }
     }
+}
 
-    // ── Dashboard updates ───────────────────────────────────────────
-    function setTemp(id, v) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        if (v != null) { el.textContent = v.toFixed(1); el.className = 'value'; }
-        else            { el.textContent = 'ERR';       el.className = 'value err'; }
+/* ── Mode + manual actuators ───────────────────────────────────── */
+async function setMode(active) {
+    if (active === manualMode) return;
+    userChangingMode = true;
+    try {
+        const r = await api('/api/manual', 'POST', { active });
+        if (!r.ok || !r.data || !r.data.success) toast((r.data && r.data.error) || 'No se pudo cambiar el modo', true);
+        else toast(active ? 'Modo manual activado' : 'Modo automático restaurado');
+    } catch (e) { toast('Error de red', true); }
+    await pollStatus();
+    userChangingMode = false;
+}
+
+async function sendActuator(cmd) {
+    try {
+        const r = await api('/api/manual/actuators', 'POST', cmd);
+        if (!r.ok || !r.data || !r.data.success) { toast((r.data && r.data.error) || 'Error', true); return false; }
+        return true;
+    } catch (e) { toast('Error de red', true); return false; }
+    finally { pollStatus(); }
+}
+
+async function toggleRelay(key, input) {
+    const label = input.closest('.sw');
+    label.classList.add('busy');
+    const ok = await sendActuator({ [key]: input.checked });
+    label.classList.remove('busy');
+    if (!ok) input.checked = !input.checked;
+}
+
+const servoEl = $('servo-range');
+let servoTimer = null;
+servoEl.addEventListener('input', () => {
+    servoDragging = true; $('servo-val').textContent = servoEl.value;
+    clearTimeout(servoTimer);
+    servoTimer = setTimeout(() => sendActuator({ servo: parseInt(servoEl.value) }), 150);   // live while dragging
+});
+servoEl.addEventListener('change', async () => {
+    clearTimeout(servoTimer);
+    servoBusy = true;
+    await sendActuator({ servo: parseInt(servoEl.value) });
+    servoDragging = false; servoBusy = false;
+});
+async function setServo(v) {
+    servoEl.value = v; $('servo-val').textContent = v;
+    servoBusy = true; await sendActuator({ servo: v }); servoBusy = false;
+}
+
+/* ── Charts ────────────────────────────────────────────────────── */
+const SERIES = [
+    { id: 'boiler_supply', label: 'Ida caldera',     color: '#e03131' },
+    { id: 'boiler_return', label: 'Retorno caldera', color: '#f59f00' },
+    { id: 'boiler_iron',   label: 'Hierro caldera',  color: '#9c36b5' },
+    { id: 'burning',       label: 'Gases (eje dcho.)', color: '#d6336c', axis: 'r' },
+    { id: 'floor_supply',  label: 'Ida suelo',       color: '#2f9e44' },
+    { id: 'floor_return',  label: 'Retorno suelo',   color: '#82c91e' },
+    { id: 'mix_supply',    label: 'Ida mezcla',      color: '#1c7ed6' },
+    { id: 'ambient_low',   label: 'Ambiente abajo',  color: '#15aabf' },
+    { id: 'ambient_high',  label: 'Ambiente arriba', color: '#5c7cfa' },
+];
+const STRIPS = [
+    { bit: 0x01, label: 'B. caldera', color: '#e03131' }, { bit: 0x02, label: 'B. calef.', color: '#1c7ed6' },
+    { bit: 0x04, label: 'Ventil.',    color: '#2f9e44' }, { bit: 0x08, label: 'Aux.',      color: '#9c36b5' },
+    { bit: 0x10, label: 'Manual',     color: '#e8590c' },
+];
+const RANGES = [ { s: 3600, l: '1 h' }, { s: 10800, l: '3 h' }, { s: 21600, l: '6 h' }, { s: 43200, l: '12 h' }, { s: 86400, l: '24 h' } ];
+let HIST = null;                       // { pts: {id: [{age, v}]}, flags: [{age, f}] }
+let visible = {}; SERIES.forEach(s => visible[s.id] = true);
+let rangeSec = 21600;
+try { const v = JSON.parse(localStorage.getItem('chartVisible') || 'null'); if (v) Object.assign(visible, v);
+      const r = parseInt(localStorage.getItem('chartRange')); if (r) rangeSec = r; } catch (e) {}
+
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+// Merge both tiers into a single age-ordered (oldest → newest) point list per series
+function buildHist(d) {
+    const pts = {}, flags = [];
+    const f = d.fine, c = d.coarse;
+    const fineOldest = f.n ? f.age + (f.n - 1) * f.step : 0;
+    const chans = d.channels.concat(['air', 'flags']);
+    for (const ch of chans) {
+        const arr = [];
+        const cs = c.series[ch] || [], fs = f.series[ch] || [];
+        cs.forEach((v, j) => { const age = c.age + (c.n - 1 - j) * c.step; if (!f.n || age > fineOldest) arr.push({ age, v }); });
+        fs.forEach((v, i) => arr.push({ age: f.age + (f.n - 1 - i) * f.step, v }));
+        if (ch === 'flags') arr.forEach(p => flags.push({ age: p.age, f: p.v })); else pts[ch] = arr.map(p => ({ age: p.age, v: p.v == null ? null : (ch === 'air' ? p.v : p.v / 10) }));
     }
+    return { pts, flags };
+}
 
-    function setBadge(id, on) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.textContent = on ? 'ON' : 'OFF';
-        el.className = 'badge ' + (on ? 'on' : 'off');
+async function loadHistory() {
+    try { const r = await fetch('/api/history'); const d = await r.json(); if (!d.error) { HIST = buildHist(d); redrawCharts(); } } catch (e) {}
+}
+
+function niceStep(span, ticks) {
+    const raw = span / ticks, p = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / p;
+    return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * p;
+}
+function fmtAge(s) {
+    if (s < 90) return 'ahora';
+    if (s < 5400) return 'hace ' + Math.round(s / 60) + ' min';
+    return 'hace ' + (s / 3600).toFixed(1).replace('.0', '') + ' h';
+}
+
+class Chart {
+    constructor(canvas, wrap, opt) {
+        this.cv = canvas; this.wrap = wrap; this.tip = wrap.querySelector('.tip');
+        this.opt = opt; this.hover = null; this.geo = null;
+        const onMove = e => { const r = canvas.getBoundingClientRect(); const x = (e.touches ? e.touches[0].clientX : e.clientX) - r.left; this.hover = x; this.draw(); };
+        canvas.addEventListener('mousemove', onMove);
+        canvas.addEventListener('touchstart', onMove, { passive: true }); canvas.addEventListener('touchmove', onMove, { passive: true });
+        const leave = () => { this.hover = null; this.draw(); };
+        canvas.addEventListener('mouseleave', leave); canvas.addEventListener('touchend', leave);
     }
+    draw() {
+        const cv = this.cv, o = this.opt;
+        const dpr = window.devicePixelRatio || 1;
+        const W = this.wrap.clientWidth; if (!W) return;
+        const strips = o.strips ? STRIPS.length : 0;
+        const H = o.height + strips * 9 + (strips ? 8 : 0);
+        cv.width = W * dpr; cv.height = H * dpr; cv.style.height = H + 'px';
+        const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+        const cText = css('--muted'), cLine = css('--line');
+        g.font = '11px -apple-system, Segoe UI, sans-serif';
 
-    function applyManualModeUI(isManual, remainingSecs) {
-        // Dashboard badge
-        const mb = document.getElementById('mode-badge');
-        if (mb) { mb.textContent = isManual ? 'MANUAL' : 'AUTOMÁTICO'; mb.className = 'badge ' + (isManual ? 'on' : 'off'); }
-        // Manual page badge
-        const mb2 = document.getElementById('manual-badge');
-        if (mb2) { mb2.textContent = isManual ? 'MANUAL' : 'AUTOMÁTICO'; mb2.className = 'badge ' + (isManual ? 'on' : 'off'); }
-        // Buttons
-        const bon  = document.getElementById('btn-manual-on');
-        const boff = document.getElementById('btn-manual-off');
-        if (bon)  bon.style.display  = isManual ? 'none'         : 'inline-block';
-        if (boff) boff.style.display = isManual ? 'inline-block' : 'none';
-        // Controls section
-        const ctrl = document.getElementById('manual-controls');
-        if (ctrl) ctrl.style.display = isManual ? 'block' : 'none';
-        // Countdown (both pages)
-        ['manual-remaining', 'manual-remaining2'].forEach(rid => {
-            const el = document.getElementById(rid);
-            if (!el) return;
-            if (isManual && remainingSecs != null) {
-                const m = Math.floor(remainingSecs / 60);
-                const s = remainingSecs % 60;
-                el.textContent = m + ':' + String(s).padStart(2, '0') + ' restantes';
-                el.style.display = 'inline';
-            } else {
-                el.style.display = 'none';
-            }
-        });
-    }
+        if (!HIST) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('Cargando…', W / 2, o.height / 2); return; }
+        const series = o.series.filter(s => visible[s.id] !== false || o.forceAll);
+        const range = o.range();
+        const L = 40, R = 10, T = 8, B = 20, ph = o.height - T - B;
 
-    function updateData() {
-        fetch('/api/status')
-            .then(r => r.json())
-            .then(data => {
-                // Temperatures
-                setTemp('t-boiler-supply', data.boiler_supply);
-                setTemp('t-boiler-return', data.boiler_return);
-                setTemp('t-boiler-iron',   data.boiler_iron);
-                setTemp('t-floor-supply',  data.floor_supply);
-                setTemp('t-floor-return',  data.floor_return);
-                setTemp('t-mix-supply',    data.mix_supply);
-                setTemp('t-ambient-low',   data.ambient_low);
-                setTemp('t-ambient-high',  data.ambient_high);
-                setTemp('t-burning',       data.burning_temp);
-
-                // Relay states + pending indicator
-                function updateRelay(base, state, desired) {
-                    setBadge(base + '-status', state);
-                    const p = document.getElementById(base + '-pending');
-                    if (p) p.style.display = (state !== desired) ? 'inline' : 'none';
-                }
-                updateRelay('boiler-pump',  data.boiler_pump,  data.boiler_pump_desired);
-                updateRelay('heating-pump', data.heating_pump, data.heating_pump_desired);
-                updateRelay('fans',         data.fans,         data.fans_desired);
-                updateRelay('other',        data.other,        data.other_desired);
-
-                // Air intake
-                setField('air-intake-value', data.air_intake, true);
-
-                // Config page sync (slider + PID status)
-                const sl = document.getElementById('cfg-target-temp');
-                if (sl && document.activeElement !== sl) {
-                    sl.value = data.target_burning_temp;
-                    setField('cfg-target-val', data.target_burning_temp, true);
-                }
-                const btn = document.getElementById('btn-autotune');
-                const at  = document.getElementById('autotune-status');
-                if (btn) btn.textContent = data.auto_tuning ? 'Cancelar autoajuste' : 'Iniciar autoajuste';
-                if (at)  at.textContent  = data.auto_tuning ? '⚙ EN PROCESO' : '';
-
-                // Manual mode — skip if a click is still in-flight
-                if (Date.now() > manualUiLockedUntil) {
-                    applyManualModeUI(data.manual_mode, data.manual_remaining_seconds);
-                }
-            })
-            .catch(() => {});
-
-        // Logs
-        fetch('/api/logs')
-            .then(r => r.text())
-            .then(t => {
-                const el = document.getElementById('logs');
-                if (el) { el.textContent = t; el.scrollTop = el.scrollHeight; }
-            })
-            .catch(() => {});
-    }
-
-    updateData();
-    setInterval(updateData, 2000);
-
-    // ── Manual mode ─────────────────────────────────────────────────
-    // Timestamp (ms) until which polls must not override the manual-mode UI.
-    // Set on every click so the 2s poll can't undo optimistic state mid-flight.
-    let manualUiLockedUntil = 0;
-
-    function setManualMode(active) {
-        const timeout = parseInt(document.getElementById('manual-timeout-input').value) || 10;
-        // Lock UI for 8s. On success we do NOT clear the lock early — a stale in-flight
-        // GET /api/status (started before the POST was processed) could arrive AFTER the
-        // POST resolves and carry manual_mode:false, reverting the UI. We let the lock
-        // expire naturally so only fresh polls (≥2s after the POST succeeded) update the UI.
-        manualUiLockedUntil = Date.now() + 8000;
-        applyManualModeUI(active, active ? timeout * 60 : null);
-        const body = active ? { active: true, timeout_minutes: timeout } : { active: false };
-        fetch('/api/manual', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        })
-        .then(r => r.json())
-        .then(d => {
-            if (!d.success) {
-                manualUiLockedUntil = 0;   // clear lock only on server-side failure
-                alert('Error al cambiar modo');
-                applyManualModeUI(!active, null);
-            }
-            // On success: leave the lock running — the next fresh poll will confirm the state
-        })
-        .catch(() => {
-            manualUiLockedUntil = 0;        // clear lock on network error
-            alert('Error de red');
-            applyManualModeUI(!active, null);
-        });
-    }
-
-    function sendActuator(cmd) {
-        fetch('/api/manual/actuators', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(cmd)
-        })
-        .then(r => r.json())
-        .then(d => { if (!d.success) alert('Error: ' + (d.error || '?')); })
-        .catch(() => alert('Error de red'));
-    }
-
-    // ── Config page ─────────────────────────────────────────────────
-    function saveConfig() {
-        const pass = document.getElementById('cfg-mqtt-pass').value;
-        const body = {
-            target_burning_temp:    parseFloat(document.getElementById('cfg-target-temp').value),
-            burning_temp_threshold: parseFloat(document.getElementById('cfg-burn-thresh').value),
-            boiler_water_threshold: parseFloat(document.getElementById('cfg-water-thresh').value),
-            boiler_water_critical:  parseFloat(document.getElementById('cfg-water-crit').value),
-            boiler_iron_threshold:  parseFloat(document.getElementById('cfg-iron-thresh').value),
-            floor_delta_threshold:  parseFloat(document.getElementById('cfg-floor-delta').value),
-            pid_kp:                 parseFloat(document.getElementById('cfg-kp').value),
-            pid_ki:                 parseFloat(document.getElementById('cfg-ki').value),
-            pid_kd:                 parseFloat(document.getElementById('cfg-kd').value),
-            servo_min:              parseInt(document.getElementById('cfg-servo-min').value),
-            servo_max:              parseInt(document.getElementById('cfg-servo-max').value),
-            relay_debounce_min:     parseInt(document.getElementById('cfg-debounce').value),
-            manual_timeout_min:     parseInt(document.getElementById('cfg-manual-tmo').value),
-            mqtt_server:            document.getElementById('cfg-mqtt-server').value,
-            mqtt_port:              parseInt(document.getElementById('cfg-mqtt-port').value),
-            mqtt_user:              document.getElementById('cfg-mqtt-user').value,
-            mqtt_base_topic:        document.getElementById('cfg-mqtt-topic').value,
+        const hasR = series.some(x => x.axis === 'r');
+        const R2 = hasR ? 42 : R, pw2 = W - L - R2;
+        const scale = grp => {
+            let lo = Infinity, hi = -Infinity, n = 0;
+            grp.forEach(sr => (HIST.pts[sr.id] || []).forEach(p => { if (p.v != null && p.age <= range) { lo = Math.min(lo, p.v); hi = Math.max(hi, p.v); n++; } }));
+            if (!n) return null;
+            const pad = Math.max(2, (hi - lo) * 0.08); lo -= pad; hi += pad;
+            const st = niceStep(hi - lo, 5); return { lo: Math.floor(lo / st) * st, hi: Math.ceil(hi / st) * st, step: st };
         };
-        if (pass) body.mqtt_password = pass;
-        fetch('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        })
-        .then(r => r.json())
-        .then(d => showCfgMsg(d.success ? 'Configuración guardada' : 'Error: ' + (d.error || '?'), d.success))
-        .catch(() => showCfgMsg('Error de red', false));
-    }
+        const SL = scale(series.filter(x => x.axis !== 'r')), SR = scale(series.filter(x => x.axis === 'r'));
+        if (!SL && !SR) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('Aún sin datos — la primera muestra llega en 1 min', W / 2, o.height / 2); this.geo = null; return; }
+        const main = SL || SR;
+        const X = age => L + pw2 * (1 - age / range);
+        const mkY = sc => v => T + ph * (1 - (v - sc.lo) / (sc.hi - sc.lo));
+        const YL = mkY(main), YRf = SR ? mkY(SR) : YL;
+        const Ys = sr => (sr.axis === 'r' && SR) ? YRf : YL;
+        const lo = main.lo, hi = main.hi, step = main.step, Y = YL;
+        // grid + y labels
+        g.strokeStyle = cLine; g.fillStyle = cText; g.lineWidth = 1; g.textAlign = 'right';
+        for (let v = lo; v <= hi + 1e-9; v += step) { const y = Math.round(Y(v)) + .5; g.beginPath(); g.moveTo(L, y); g.lineTo(W - R2, y); g.stroke(); g.fillText(v % 1 ? v.toFixed(1) : v, L - 6, y + 4); }
+        if (SR && SL) { const rs = series.find(x => x.axis === 'r'); g.fillStyle = rs.color; g.textAlign = 'left'; for (let v = SR.lo; v <= SR.hi + 1e-9; v += SR.step) g.fillText(v % 1 ? v.toFixed(1) : v, W - R2 + 6, Math.round(YRf(v)) + 4); g.fillStyle = cText; g.textAlign = 'right'; }
+        // x labels
+        g.textAlign = 'center';
+        const xt = range <= 3600 ? 600 : range <= 10800 ? 1800 : range <= 21600 ? 3600 : range <= 43200 ? 7200 : 14400;
+        for (let a = 0; a <= range; a += xt) { const x = X(a); g.fillStyle = cText; g.fillText(a === 0 ? 'ahora' : (a >= 3600 ? (a / 3600) + ' h' : (a / 60) + ' min'), Math.min(Math.max(x, L + 14), W - R2 - 12), o.height - 4); }
 
-    function resetConfig() {
-        fetch('/api/config/reset', { method: 'POST' })
-            .then(r => r.json())
-            .then(() => { showCfgMsg('Valores por defecto restaurados', true); return fetch('/api/config'); })
-            .then(r => r.json())
-            .then(cfg => {
-                setField('cfg-target-temp',  cfg.target_burning_temp); setField('cfg-target-val', cfg.target_burning_temp, true);
-                setField('cfg-burn-thresh',  cfg.burning_temp_threshold);
-                setField('cfg-water-thresh', cfg.boiler_water_threshold);
-                setField('cfg-water-crit',   cfg.boiler_water_critical);
-                setField('cfg-iron-thresh',  cfg.boiler_iron_threshold);
-                setField('cfg-floor-delta',  cfg.floor_delta_threshold);
-                setField('cfg-kp', cfg.pid_kp); setField('cfg-ki', cfg.pid_ki); setField('cfg-kd', cfg.pid_kd);
-                setField('cfg-servo-min',    cfg.servo_min);
-                setField('cfg-servo-max',    cfg.servo_max);
-                setField('cfg-debounce',     cfg.relay_debounce_min);
-                setField('cfg-manual-tmo',   cfg.manual_timeout_min);
-                setField('cfg-mqtt-server',  cfg.mqtt_server);
-                setField('cfg-mqtt-port',    cfg.mqtt_port);
-                setField('cfg-mqtt-user',    cfg.mqtt_user);
-                setField('cfg-mqtt-topic',   cfg.mqtt_base_topic);
-            })
-            .catch(() => showCfgMsg('Error de red', false));
-    }
+        // lines
+        g.lineWidth = o.thin ? 1.6 : 2; g.lineJoin = 'round';
+        series.forEach(s => {
+            const arr = (HIST.pts[s.id] || []).filter(p => p.age <= range * 1.02);
+            g.strokeStyle = s.color; g.beginPath(); let pen = false;
+            arr.forEach(p => { if (p.v == null) { pen = false; return; } const x = X(p.age), y = Ys(s)(p.v); if (!pen) { g.moveTo(x, y); pen = true; } else g.lineTo(x, y); });
+            g.stroke();
+        });
 
-    function showCfgMsg(msg, ok) {
-        const el = document.getElementById('cfg-msg');
-        el.textContent = msg;
-        el.className = 'alert ' + (ok ? 'alert-ok' : 'alert-err');
-        el.style.display = 'block';
-        setTimeout(() => { el.style.display = 'none'; }, 3000);
-    }
-
-    function toggleAutotune() {
-        fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ autotune: true })
-        }).catch(() => {});
-    }
-
-    // ── Dallas sensors ───────────────────────────────────────────────
-    let ROLES = [{ value: '', label: '— Sin asignar —' }];
-    let dallasTableReady = false;
-    let latestAssignments = {};
-
-    fetch('/api/dallas/roles')
-        .then(r => r.json())
-        .then(d => {
-            ROLES = [{ value: '', label: '— Sin asignar —' }]
-                .concat(d.roles.map(r => ({ value: r.id, label: r.label })));
-            dallasTableReady = false;
-            updateDallas();
-        })
-        .catch(() => updateDallas());
-
-    function updateDallas() {
-        fetch('/api/dallas/sensors')
-            .then(r => r.json())
-            .then(data => {
-                const tcEl = document.getElementById('tc-temp');
-                if (tcEl) tcEl.textContent = data.thermocouple_temp != null ? data.thermocouple_temp.toFixed(1) : 'ERROR';
-                const cntEl = document.getElementById('dallas-count');
-                if (cntEl) cntEl.textContent = data.count + ' sensor' + (data.count !== 1 ? 'es' : '') + ' en el bus';
-
-                latestAssignments = data.assignments || {};
-                const tbody = document.getElementById('dallas-tbody');
-                if (!tbody) return;
-                const sensors = data.sensors;
-
-                if (sensors.length === 0) {
-                    dallasTableReady = false;
-                    tbody.innerHTML = '<tr><td colspan="6" style="padding:10px;color:#c62828;">No se detectaron sensores. Comprueba el cableado (pin ' + SYS.one_wire_pin + ', 4.7kΩ a 3.3V).</td></tr>';
-                    return;
-                }
-
-                const existingRows = tbody.querySelectorAll('tr[data-sensor-addr]');
-                const addrMatch = existingRows.length === sensors.length &&
-                    [...existingRows].every((row, i) => row.dataset.sensorAddr === sensors[i].address);
-
-                if (!dallasTableReady || !addrMatch) {
-                    tbody.innerHTML = sensors.map((s, i) => {
-                        const roleOpts = ROLES.map(r => {
-                            if (r.value !== '') {
-                                const takenBy = data.assignments[r.value] || '';
-                                if (takenBy !== '' && takenBy !== s.address) return '';
-                            }
-                            return `<option value="${r.value}"${s.role === r.value ? ' selected' : ''}>${r.label}</option>`;
-                        }).join('');
-                        return `<tr data-sensor-addr="${s.address}">
-                            <td>${i + 1}</td>
-                            <td style="font-family:monospace; font-size:12px;">${s.address}</td>
-                            <td id="dt-${i}" style="text-align:right; font-weight:bold;">--</td>
-                            <td id="dr-${i}" style="color:#555;">--</td>
-                            <td><select id="role-sel-${i}">${roleOpts}</select></td>
-                            <td>
-                                <button type="button" onclick="assignSensor('${s.address}', ${i})"
-                                    style="padding:4px 10px; font-size:12px;">Asignar</button>
-                            </td>
-                        </tr>`;
-                    }).join('');
-                    dallasTableReady = true;
-                }
-
-                sensors.forEach((s, i) => {
-                    const tc = document.getElementById('dt-' + i);
-                    const rc = document.getElementById('dr-' + i);
-                    if (tc) { tc.textContent = s.temperature != null ? s.temperature.toFixed(2) : 'ERROR'; tc.style.color = s.temperature != null ? '#333' : '#c62828'; }
-                    if (rc) rc.textContent = s.role || '—';
+        // relay strips
+        if (strips) {
+            const y0 = o.height + 4;
+            STRIPS.forEach((st, i) => {
+                const y = y0 + i * 9;
+                g.fillStyle = cLine; g.globalAlpha = .35; g.fillRect(L, y, pw2, 6); g.globalAlpha = 1;
+                g.fillStyle = st.color;
+                const fl = HIST.flags.filter(p => p.age <= range * 1.02);
+                fl.forEach((p, k) => {
+                    if (!(p.f & st.bit)) return;
+                    const nxt = fl[k + 1]; const x1 = X(p.age), x2 = nxt ? X(nxt.age) : X(0);
+                    g.fillRect(x1, y, Math.max(1.5, x2 - x1), 6);
                 });
-            })
-            .catch(() => {});
-    }
-
-    function assignSensor(address, idx) {
-        const selectedRole = document.getElementById('role-sel-' + idx).value;
-        let postRole = selectedRole, postAddr = address;
-        if (selectedRole === '') {
-            postRole = Object.keys(latestAssignments).find(r => latestAssignments[r] === address) || '';
-            if (!postRole) return;
-            postAddr = '';
-        }
-        fetch('/api/dallas/assign', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ role: postRole, address: postAddr })
-        })
-        .then(r => r.json())
-        .then(d => {
-            if (d.success) { dallasTableReady = false; updateDallas(); }
-            else alert('Error: ' + (d.error || '?'));
-        })
-        .catch(() => alert('Error de red'));
-    }
-
-    function scanBus() {
-        const btn = document.getElementById('btn-scan');
-        btn.disabled = true; btn.textContent = 'Escaneando...';
-        fetch('/api/dallas/scan', { method: 'POST' })
-            .then(r => r.json())
-            .then(() => { btn.disabled = false; btn.textContent = 'Re-escanear bus'; dallasTableReady = false; updateDallas(); })
-            .catch(() => { btn.disabled = false; btn.textContent = 'Re-escanear bus'; });
-    }
-
-    updateDallas();
-    setInterval(updateDallas, 2000);
-
-    // ── Display debug ────────────────────────────────────────────────
-    function loadDisplayStatus() {
-        fetch('/api/display/status')
-            .then(r => r.json())
-            .then(d => {
-                const badge = document.getElementById('disp-badge');
-                if (badge) { badge.textContent = d.available ? 'SÍ' : 'NO'; badge.className = 'badge ' + (d.available ? 'on' : 'off'); }
-                setField('disp-type', d.type + ' (0x3C)', true);
-                setField('disp-pins', 'SDA=' + d.sda_pin + '  SCL=' + d.scl_pin, true);
-                const tip = document.getElementById('disp-tip');
-                if (tip) {
-                    if (!d.available) {
-                        tip.textContent = 'No responde en I2C — comprueba el cableado o usa Escanear I2C.';
-                        tip.style.display = 'block';
-                    } else if (d.type === 'SSD1306') {
-                        tip.textContent = 'Detectado pero no muestra nada → prueba SH1106: descomenta #define OLED_TYPE_SH1106 en config.h y flashea.';
-                        tip.style.display = 'block';
-                    } else {
-                        tip.style.display = 'none';
-                    }
-                }
-            })
-            .catch(() => {});
-    }
-
-    function displayTest() {
-        fetch('/api/display/test', { method: 'POST' })
-            .then(r => r.json())
-            .then(d => {
-                if (!d.available) alert('Display no disponible (available=false). Revisa cableado o tipo.');
-                else alert('Patrón de test enviado al display.');
-            })
-            .catch(() => alert('Error de red'));
-    }
-
-    function i2cScan() {
-        const el = document.getElementById('i2c-result');
-        if (el) { el.textContent = 'Escaneando...'; el.style.display = 'block'; }
-        fetch('/api/i2c/scan')
-            .then(r => r.json())
-            .then(d => {
-                if (!el) return;
-                if (d.count === 0) {
-                    el.textContent = 'Sin dispositivos en SDA=' + d.sda_pin + ' / SCL=' + d.scl_pin + '. Comprueba cableado.';
-                } else {
-                    el.textContent = d.count + ' dispositivo(s) encontrado(s): ' + d.devices.join(', ')
-                        + '\n(0x3C / 0x3D = OLED)';
-                }
-            })
-            .catch(() => { if (el) el.textContent = 'Error de red'; });
-    }
-
-    loadDisplayStatus();
-
-    // ── MQTT debug ──────────────────────────────────────────────────
-    const MQTT_RC = {
-        '-4': 'Timeout de conexión TCP',
-        '-3': 'Conexión perdida (keep-alive)',
-        '-2': 'Fallo TCP — sin ruta al host',
-        '-1': 'Desconectado',
-         '0': 'Conectado',
-         '1': 'Versión de protocolo incorrecta',
-         '2': 'Client ID rechazado por el broker',
-         '3': 'Broker no disponible',
-         '4': 'Credenciales incorrectas (usuario/contraseña)',
-         '5': 'No autorizado'
-    };
-
-    function updateMqttStatus() {
-        fetch('/api/mqtt/status')
-            .then(r => r.json())
-            .then(d => {
-                const badge = document.getElementById('mqtt-badge');
-                if (badge) {
-                    badge.textContent = d.connected ? 'CONECTADO' : 'DESCONECTADO';
-                    badge.className   = 'badge ' + (d.connected ? 'on' : 'off');
-                }
-                setField('mqtt-server-info', d.server + ':' + d.port, true);
-                setField('mqtt-pub-count', d.publish_count, true);
-
-                const ago = document.getElementById('mqtt-last-pub');
-                if (ago) ago.textContent = d.last_publish_ago_sec >= 0
-                    ? 'hace ' + d.last_publish_ago_sec + 's' : 'nunca';
-
-                const retryRow = document.getElementById('mqtt-retry-row');
-                const retryEl  = document.getElementById('mqtt-next-retry');
-                if (!d.connected && d.next_retry_sec > 0) {
-                    if (retryRow) retryRow.style.display = 'flex';
-                    if (retryEl) {
-                        const m = Math.floor(d.next_retry_sec / 60);
-                        const s = d.next_retry_sec % 60;
-                        retryEl.textContent = m > 0 ? m + 'min ' + s + 's' : s + 's';
-                    }
-                } else {
-                    if (retryRow) retryRow.style.display = 'none';
-                }
-
-                const errRow = document.getElementById('mqtt-err-row');
-                const errEl  = document.getElementById('mqtt-last-err');
-                if (!d.connected && d.fail_count > 0) {
-                    if (errRow) errRow.style.display = 'flex';
-                    if (errEl) {
-                        const desc = MQTT_RC[String(d.last_rc)] || 'Desconocido';
-                        errEl.textContent = 'rc=' + d.last_rc + ' — ' + desc + ' (fallo #' + d.fail_count + ')';
-                    }
-                } else {
-                    if (errRow) errRow.style.display = 'none';
-                }
-            })
-            .catch(() => {});
-    }
-
-    function mqttRetry() {
-        fetch('/api/mqtt/retry', { method: 'POST' })
-            .then(() => { setTimeout(updateMqttStatus, 1500); })
-            .catch(() => {});
-    }
-
-    updateMqttStatus();
-    setInterval(updateMqttStatus, 5000);
-
-    // ── Export / Import ──────────────────────────────────────────────
-    function exportConfig() {
-        fetch('/api/config/export')
-            .then(r => r.json())
-            .then(data => {
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-                a.download = 'boiler-config.json';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            })
-            .catch(e => alert('Error: ' + e));
-    }
-
-    function importConfig(input) {
-        const file = input.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = e => {
-            const statusEl = document.getElementById('import-status');
-            fetch('/api/config/import', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: e.target.result
-            })
-            .then(r => r.json())
-            .then(d => {
-                statusEl.textContent = d.success ? '✓ Importado' : '✗ ' + (d.error || 'Error');
-                statusEl.style.cssText = 'display:inline; padding:5px 10px; border-radius:4px; font-size:13px; background:' + (d.success ? '#e8f5e9; color:#2e7d32' : '#ffebee; color:#c62828');
-                input.value = '';
-                setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
-            })
-            .catch(() => {
-                statusEl.textContent = '✗ Error de red';
-                statusEl.style.cssText = 'display:inline; padding:5px 10px; border-radius:4px; font-size:13px; background:#ffebee; color:#c62828';
+                g.fillStyle = cText; g.textAlign = 'left'; g.font = '9px sans-serif'; g.fillText(st.label, L + 3, y + 5.5); g.font = '11px sans-serif';
             });
-        };
-        reader.readAsText(file);
+        }
+
+        // hover
+        this.geo = { L, R: R2, pw: pw2, range, X };
+        const tip = this.tip;
+        if (this.hover != null && this.hover >= L && this.hover <= W - R2 && o.tooltip !== false) {
+            const age = (1 - (this.hover - L) / pw2) * range;
+            g.strokeStyle = cText; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(this.hover, T); g.lineTo(this.hover, T + ph); g.stroke(); g.setLineDash([]);
+            let html = '<b>' + fmtAge(age) + '</b>';
+            series.forEach(s => {
+                const arr = HIST.pts[s.id] || []; let best = null, bd = Infinity;
+                arr.forEach(p => { const d = Math.abs(p.age - age); if (d < bd && p.v != null) { bd = d; best = p; } });
+                if (best && bd < Math.max(400, range / 60)) { g.fillStyle = s.color; g.beginPath(); g.arc(X(best.age), Ys(s)(best.v), 3.5, 0, 7); g.fill();
+                    html += '<div><i style="background:' + s.color + '"></i>' + s.label + ': <b style="display:inline">' + best.v.toFixed(1) + ' °C</b></div>'; }
+            });
+            tip.innerHTML = html; tip.style.display = 'block';
+            const tw = tip.offsetWidth; tip.style.left = Math.min(Math.max(this.hover + 12, 0), W - tw) + 'px'; tip.style.top = '6px';
+        } else tip.style.display = 'none';
     }
+}
+
+const miniSeries = SERIES.filter(s => s.id === 'boiler_supply' || s.id === 'burning');
+const miniChart = new Chart($('mini-chart'), $('mini-wrap'), { height: 170, series: miniSeries, range: () => 3600, forceAll: true, thin: true });
+const bigChart  = new Chart($('big-chart'),  $('big-wrap'),  { height: 320, series: SERIES, range: () => rangeSec, strips: true });
+function redrawCharts() { miniChart.draw(); bigChart.draw(); updateLegend(); }
+window.addEventListener('resize', redrawCharts);
+if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redrawCharts);
+
+function buildChartControls() {
+    $('ranges').innerHTML = RANGES.map(r => `<button type="button" data-s="${r.s}" class="${r.s === rangeSec ? 'active' : ''}">${r.l}</button>`).join('');
+    $('ranges').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+        rangeSec = parseInt(b.dataset.s); try { localStorage.setItem('chartRange', rangeSec); } catch (e) {}
+        $('ranges').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b)); bigChart.draw();
+    }));
+    $('legend').innerHTML = SERIES.map(s => `<span class="lg" data-id="${s.id}"><i style="background:${s.color}"></i>${s.label} <span class="now" id="lg-${s.id}"></span></span>`).join('');
+    $('legend').querySelectorAll('.lg').forEach(el => el.addEventListener('click', () => {
+        visible[el.dataset.id] = visible[el.dataset.id] === false; try { localStorage.setItem('chartVisible', JSON.stringify(visible)); } catch (e) {}
+        bigChart.draw(); updateLegend();
+    }));
+}
+function updateLegend() {
+    SERIES.forEach(s => {
+        const el = document.querySelector('.lg[data-id="' + s.id + '"]'); if (!el) return;
+        el.classList.toggle('off', visible[s.id] === false);
+        const n = $('lg-' + s.id); const arr = HIST && HIST.pts[s.id]; const last = arr && arr.length ? arr[arr.length - 1].v : null;
+        if (n) n.textContent = last != null ? last.toFixed(1) + '°' : '';
+    });
+}
+buildChartControls();
+
+/* ── Config ────────────────────────────────────────────────────── */
+function fillConfig(cfg) {
+    SYS = cfg;
+    const sl = $('cfg-target-temp'); sl.min = cfg.target_temp_min; sl.max = cfg.target_temp_max;
+    setField('cfg-pid-source', cfg.pid_source != null ? cfg.pid_source : 8);
+    setField('cfg-target-temp', cfg.target_burning_temp); setField('cfg-target-val', cfg.target_burning_temp, true);
+    setField('cfg-burn-thresh', cfg.burning_temp_threshold); setField('cfg-water-thresh', cfg.boiler_water_threshold);
+    setField('cfg-water-crit', cfg.boiler_water_critical);   setField('cfg-iron-thresh', cfg.boiler_iron_threshold);
+    setField('cfg-floor-delta', cfg.floor_delta_threshold);
+    setField('cfg-kp', cfg.pid_kp); setField('cfg-ki', cfg.pid_ki); setField('cfg-kd', cfg.pid_kd);
+    setField('cfg-servo-min', cfg.servo_min); setField('cfg-servo-max', cfg.servo_max);
+    setField('cfg-debounce', cfg.relay_debounce_min);
+    setField('cfg-mqtt-server', cfg.mqtt_server); setField('cfg-mqtt-port', cfg.mqtt_port);
+    setField('cfg-mqtt-user', cfg.mqtt_user); setField('cfg-mqtt-topic', cfg.mqtt_base_topic);
+    updatePidWarn();
+}
+function updatePidWarn() {
+    const w = $('cfg-pid-warn'), src = parseInt($('cfg-pid-source').value), tgt = parseFloat($('cfg-target-temp').value), thr = parseFloat($('cfg-burn-thresh').value);
+    if (src === 8 && !isNaN(thr) && tgt <= thr) {
+        w.textContent = 'El objetivo (' + tgt + ' °C) es menor o igual que el umbral de combustión (' + thr + ' °C): al bajar de ese umbral se considera apagado y el aire se cierra del todo. Sube el objetivo o baja el umbral.';
+        w.className = 'msg warn';
+    } else w.className = 'msg';
+}
+fetch('/api/config').then(r => r.json()).then(fillConfig).catch(() => {});
+
+function showMsg(msg, kind) {
+    const el = $('cfg-msg'); el.textContent = msg; el.className = 'msg ' + kind;
+    clearTimeout(showMsg.t); showMsg.t = setTimeout(() => el.className = 'msg', 3500);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function saveConfig() {
+    const n = id => parseFloat($(id).value), i = id => parseInt($(id).value);
+    const body = {
+        target_burning_temp: n('cfg-target-temp'), pid_source: i('cfg-pid-source'), burning_temp_threshold: n('cfg-burn-thresh'),
+        boiler_water_threshold: n('cfg-water-thresh'), boiler_water_critical: n('cfg-water-crit'),
+        boiler_iron_threshold: n('cfg-iron-thresh'), floor_delta_threshold: n('cfg-floor-delta'),
+        pid_kp: n('cfg-kp'), pid_ki: n('cfg-ki'), pid_kd: n('cfg-kd'),
+        servo_min: i('cfg-servo-min'), servo_max: i('cfg-servo-max'), relay_debounce_min: i('cfg-debounce'),
+        mqtt_server: $('cfg-mqtt-server').value, mqtt_port: i('cfg-mqtt-port'),
+        mqtt_user: $('cfg-mqtt-user').value, mqtt_base_topic: $('cfg-mqtt-topic').value,
+    };
+    // Basic validation before touching the boiler
+    for (const [k, v] of Object.entries(body)) if (typeof v === 'number' && isNaN(v)) return showMsg('Valor no válido en «' + k + '»', 'err');
+    if (body.boiler_water_critical <= body.boiler_water_threshold) return showMsg('«Agua crítica» debe ser mayor que «Agua caliente»', 'err');
+    if (body.servo_min >= body.servo_max || body.servo_min < 0 || body.servo_max > 180) return showMsg('Rango de servo no válido (0–180, mín < máx)', 'err');
+    if (body.relay_debounce_min < 0 || body.relay_debounce_min > 60) return showMsg('Debounce fuera de rango (0–60 min)', 'err');
+    const pass = $('cfg-mqtt-pass').value; if (pass) body.mqtt_password = pass;
+    api('/api/config', 'POST', body).then(r => {
+        if (r.data && r.data.success) { showMsg(r.data.warning ? 'Aplicado, pero no se pudo guardar en flash' : 'Configuración guardada', r.data.warning ? 'warn' : 'ok'); $('cfg-mqtt-pass').value = ''; }
+        else showMsg('Error: ' + ((r.data && r.data.error) || '?'), 'err');
+    }).catch(() => showMsg('Error de red', 'err'));
+}
+function resetConfig() {
+    api('/api/config/reset', 'POST').then(() => { showMsg('Valores por defecto restaurados', 'ok'); return fetch('/api/config'); })
+        .then(r => r.json()).then(fillConfig).catch(() => showMsg('Error de red', 'err'));
+}
+async function toggleAutotune() {
+    const was = !!(ST && ST.auto_tuning);
+    try { await api('/api/settings', 'POST', { autotune: true }); } catch (e) { return toast('Error de red', true); }
+    await pollStatus();
+    if (!was && !(ST && ST.auto_tuning)) toast('No se pudo iniciar: hace falta combustión, modo automático y sin alarmas', true);
+}
+
+/* ── Autotest ──────────────────────────────────────────────────── */
+let selfTestBusy = false;
+function renderSelfTest(d) {
+    const ok = v => `<span style="color:var(--ok);font-weight:700">${v}</span>`, bad = v => `<span style="color:var(--err);font-weight:700">${v}</span>`;
+    const rows = [
+        ['Pantalla OLED', d.display_ok ? ok('detectada') : bad('no detectada')],
+        ['Relés', d.relays_pulsed + ' de 4 pulsados — ¿reaccionó cada dispositivo?'],
+        ['Termopar MAX6675', d.tc_ok ? ok(d.tc_temp.toFixed(1) + ' °C') : bad('ERROR / sin lectura')],
+        ['Sensores Dallas', (d.dallas_valid === d.dallas_count && d.dallas_count > 0 ? ok : bad)(d.dallas_valid + ' de ' + d.dallas_count + ' con lectura')],
+    ];
+    const out = $('selftest-out'); out.style.display = 'block';
+    out.innerHTML = d.error ? `<div class="msg err" style="display:block">${d.error}</div>`
+        : rows.map(r => `<div class="row"><span>${r[0]}</span><span>${r[1]}</span></div>`).join('');
+}
+async function runSelfTest() {
+    const btn = $('btn-selftest'); selfTestBusy = true; btn.disabled = true; $('selftest-out').style.display = 'none';
+    try {
+        const r = await api('/api/selftest', 'POST');
+        if (!r.ok) { toast((r.data && r.data.error) || 'No se pudo iniciar', true); selfTestBusy = false; btn.disabled = !manualMode; return; }
+        for (let i = 0; i < 60; i++) {
+            await new Promise(res => setTimeout(res, 800));
+            let d = null; try { d = await (await fetch('/api/selftest')).json(); } catch (e) { continue; }   // the ESP may answer slowly while it runs
+            $('selftest-step').textContent = d.running ? '⚙ ' + (d.step || '…') : '';
+            if (d.done && !d.running) { renderSelfTest(d); break; }
+        }
+    } catch (e) { toast('Error de red', true); }
+    $('selftest-step').textContent = ''; selfTestBusy = false; btn.disabled = !manualMode;
+}
+
+/* ── Salidas de relé (rol → canal) ────────────────────────────── */
+async function loadRelayMap() {
+    try {
+        const d = await (await fetch('/api/relays/map')).json();
+        const chLabel = c => 'Canal ' + (c.id + 1) + ' · GPIO ' + c.pin;
+        $('relay-map').innerHTML = d.roles.map(r => `
+            <div class="frow"><label>${r.label}<small>${r.state ? 'ahora ON' : 'ahora OFF'}</small></label>
+                <select onchange="assignRelay('${r.id}', this.value)">${d.channels.map(c => `<option value="${c.id}"${c.id === r.channel ? ' selected' : ''}>${chLabel(c)}</option>`).join('')}</select></div>`).join('');
+        document.querySelectorAll('.chn').forEach(el => {
+            const r = d.roles.find(x => x.id === el.dataset.role); if (!r) return;
+            const c = d.channels.find(x => x.id === r.channel); el.textContent = c ? chLabel(c) : '';
+        });
+    } catch (e) {}
+}
+async function assignRelay(role, channel) {
+    try {
+        const r = await api('/api/relays/map', 'POST', { role, channel: parseInt(channel) });
+        if (r.data && r.data.success) toast('Canal asignado'); else toast('Error: ' + ((r.data && r.data.error) || '?'), true);
+    } catch (e) { toast('Error de red', true); }
+    loadRelayMap(); pollStatus();
+}
+loadRelayMap();
+
+/* ── Diagnóstico: Dallas ───────────────────────────────────────── */
+let ROLES = [{ value: '', label: '— Sin asignar —' }];
+let dallasTableReady = false, latestAssignments = {};
+fetch('/api/dallas/roles').then(r => r.json()).then(d => {
+    ROLES = [{ value: '', label: '— Sin asignar —' }].concat(d.roles.map(r => ({ value: r.id, label: r.label })));
+    dallasTableReady = false; updateDallas();
+}).catch(() => updateDallas());
+
+function updateDallas() {
+    if (!$('page-debug').classList.contains('active')) return;
+    fetch('/api/dallas/sensors').then(r => r.json()).then(data => {
+        $('tc-temp').textContent = data.thermocouple_temp != null ? data.thermocouple_temp.toFixed(1) : 'ERROR';
+        $('dallas-count').textContent = data.count + ' sensor' + (data.count !== 1 ? 'es' : '') + ' en el bus';
+        latestAssignments = data.assignments || {};
+        const tbody = $('dallas-tbody'), sensors = data.sensors;
+        if (!sensors.length) {
+            dallasTableReady = false;
+            tbody.innerHTML = '<tr><td colspan="6" style="padding:10px;color:var(--err)">No se detectaron sensores. Comprueba el cableado (pin ' + (SYS.one_wire_pin || '?') + ', 4.7 kΩ a 3.3 V).</td></tr>';
+            return;
+        }
+        const rows = tbody.querySelectorAll('tr[data-sensor-addr]');
+        const same = rows.length === sensors.length && [...rows].every((r, i) => r.dataset.sensorAddr === sensors[i].address);
+        if (!dallasTableReady || !same) {
+            tbody.innerHTML = sensors.map((s, i) => {
+                const opts = ROLES.map(r => {
+                    if (r.value !== '') { const by = data.assignments[r.value] || ''; if (by !== '' && by !== s.address) return ''; }
+                    return `<option value="${r.value}"${s.role === r.value ? ' selected' : ''}>${r.label}</option>`;
+                }).join('');
+                return `<tr data-sensor-addr="${s.address}"><td>${i + 1}</td><td class="mono">${s.address}</td>
+                    <td id="dt-${i}" style="text-align:right;font-weight:700">--</td><td id="dr-${i}" style="color:var(--muted)">--</td>
+                    <td><select id="role-sel-${i}">${opts}</select></td>
+                    <td><button type="button" class="btn blue sm" onclick="assignSensor('${s.address}', ${i})">Asignar</button></td></tr>`;
+            }).join('');
+            dallasTableReady = true;
+        }
+        sensors.forEach((s, i) => {
+            const tc = $('dt-' + i), rc = $('dr-' + i);
+            if (tc) { tc.textContent = s.temperature != null ? s.temperature.toFixed(2) : 'ERROR'; tc.style.color = s.temperature != null ? '' : 'var(--err)'; }
+            if (rc) rc.textContent = s.role || '—';
+        });
+    }).catch(() => {});
+}
+function assignSensor(address, idx) {
+    const sel = $('role-sel-' + idx).value; let role = sel, addr = address;
+    if (sel === '') { role = Object.keys(latestAssignments).find(r => latestAssignments[r] === address) || ''; if (!role) return; addr = ''; }
+    api('/api/dallas/assign', 'POST', { role, address: addr }).then(r => {
+        if (r.data && r.data.success) { dallasTableReady = false; updateDallas(); toast('Sensor asignado'); }
+        else toast('Error: ' + ((r.data && r.data.error) || '?'), true);
+    }).catch(() => toast('Error de red', true));
+}
+function scanBus() {
+    const b = $('btn-scan'); b.disabled = true; b.textContent = 'Escaneando...';
+    fetch('/api/dallas/scan', { method: 'POST' }).then(r => r.json()).then(() => { dallasTableReady = false; updateDallas(); })
+        .finally(() => { b.disabled = false; b.textContent = 'Re-escanear bus'; });
+}
+
+/* ── Diagnóstico: display, MQTT, backup ────────────────────────── */
+function loadDisplayStatus() {
+    fetch('/api/display/status').then(r => r.json()).then(d => {
+        const b = $('disp-badge'); b.textContent = d.available ? 'SÍ' : 'NO'; b.className = 'pill' + (d.available ? ' on' : '');
+        setField('disp-type', d.type + ' (0x3C)', true); setField('disp-pins', 'SDA=' + d.sda_pin + '  SCL=' + d.scl_pin, true);
+        const tip = $('disp-tip');
+        if (!d.available) { tip.textContent = 'No responde en I2C — comprueba cableado o usa Escanear I2C.'; tip.className = 'msg warn'; }
+        else if (d.type === 'SSD1306') { tip.textContent = 'Detectado pero sin imagen → prueba SH1106: define OLED_TYPE_SH1106 en config.h y flashea.'; tip.className = 'msg warn'; }
+        else tip.className = 'msg';
+    }).catch(() => {});
+}
+function displayTest() { api('/api/display/test', 'POST').then(r => toast(r.data && r.data.available ? 'Patrón enviado al display' : 'Display no disponible', !(r.data && r.data.available))).catch(() => toast('Error de red', true)); }
+function i2cScan() {
+    const el = $('i2c-result'); el.textContent = 'Escaneando...'; el.style.display = 'block';
+    fetch('/api/i2c/scan').then(r => r.json()).then(d => {
+        el.textContent = d.count === 0 ? 'Sin dispositivos en SDA=' + d.sda_pin + ' / SCL=' + d.scl_pin + '. Comprueba cableado.'
+            : d.count + ' dispositivo(s): ' + d.devices.join(', ') + '\n(0x3C / 0x3D = OLED)';
+    }).catch(() => el.textContent = 'Error de red');
+}
+const MQTT_RC = { '-4': 'Timeout de conexión TCP', '-3': 'Conexión perdida (keep-alive)', '-2': 'Fallo TCP — sin ruta al host', '-1': 'Desconectado', '0': 'Conectado',
+    '1': 'Versión de protocolo incorrecta', '2': 'Client ID rechazado', '3': 'Broker no disponible', '4': 'Credenciales incorrectas', '5': 'No autorizado' };
+function updateMqttStatus() {
+    if (!$('page-debug').classList.contains('active')) return;
+    fetch('/api/mqtt/status').then(r => r.json()).then(d => {
+        const b = $('mqtt-badge'); b.textContent = d.connected ? 'CONECTADO' : 'DESCONECTADO'; b.className = 'pill' + (d.connected ? ' on' : '');
+        setField('mqtt-server-info', d.server + ':' + d.port, true); setField('mqtt-pub-count', d.publish_count, true);
+        $('mqtt-last-pub').textContent = d.last_publish_ago_sec >= 0 ? 'hace ' + d.last_publish_ago_sec + ' s' : 'nunca';
+        const show = !d.connected && d.next_retry_sec > 0;
+        $('mqtt-retry-row').style.display = show ? 'flex' : 'none';
+        if (show) { const m = Math.floor(d.next_retry_sec / 60), s = d.next_retry_sec % 60; $('mqtt-next-retry').textContent = m > 0 ? m + ' min ' + s + ' s' : s + ' s'; }
+        const err = !d.connected && d.fail_count > 0; $('mqtt-err-row').style.display = err ? 'flex' : 'none';
+        if (err) $('mqtt-last-err').textContent = 'rc=' + d.last_rc + ' — ' + (MQTT_RC[String(d.last_rc)] || 'Desconocido') + ' (fallo #' + d.fail_count + ')';
+    }).catch(() => {});
+}
+function mqttRetry() { fetch('/api/mqtt/retry', { method: 'POST' }).then(() => setTimeout(updateMqttStatus, 1500)).catch(() => {}); }
+
+function exportConfig() {
+    fetch('/api/config/export').then(r => r.json()).then(data => {
+        const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+        a.download = 'boiler-config.json'; document.body.appendChild(a); a.click(); a.remove();
+    }).catch(e => toast('Error: ' + e, true));
+}
+function importConfig(input) {
+    const file = input.files[0]; if (!file) return;
+    const rd = new FileReader();
+    rd.onload = e => {
+        const st = $('import-status');
+        fetch('/api/config/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: e.target.result })
+            .then(r => r.json()).then(d => {
+                st.textContent = d.success ? '✓ Importado' : '✗ ' + (d.error || 'Error'); st.style.color = d.success ? 'var(--ok)' : 'var(--err)';
+                input.value = ''; if (d.success) fetch('/api/config').then(r => r.json()).then(fillConfig);
+                setTimeout(() => st.textContent = '', 3500);
+            }).catch(() => { st.textContent = '✗ Error de red'; st.style.color = 'var(--err)'; });
+    };
+    rd.readAsText(file);
+}
+
+function updateLogs() {
+    if (!$('page-debug').classList.contains('active')) return;
+    fetch('/api/logs').then(r => r.text()).then(t => { const el = $('logs'); const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30; el.textContent = t; if (stick) el.scrollTop = el.scrollHeight; }).catch(() => {});
+}
+
+/* ── Boot ──────────────────────────────────────────────────────── */
+pollStatus(); setInterval(pollStatus, 2000);
+setInterval(() => { updateDallas(); updateLogs(); }, 2000);
+setInterval(updateMqttStatus, 5000);
+setInterval(() => { if (!document.hidden) loadHistory(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { pollStatus(); loadHistory(); } });
+loadDisplayStatus();
+let startPage = 'dashboard';
+try { const p = localStorage.getItem('page'); if (p && $('page-' + p)) startPage = p; } catch (e) {}
+gotoPage(startPage);
 </script>
 </body>
 </html>

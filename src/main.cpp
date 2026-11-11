@@ -3,6 +3,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
+#include <esp_system.h>
 
 // Include project header files
 #include "config.h"
@@ -16,6 +17,8 @@
 #include "fs_helper.h"
 #include "sensor_config.h"
 #include "runtime_config.h"
+#include "history.h"
+#include "relay_config.h"
 
 // Creación del servidor web directamente en main.cpp
 AsyncWebServer webServer(WEB_SERVER_PORT);
@@ -29,6 +32,10 @@ Relay boilerPumpRelay(RELAY_BOILER_PUMP, "Boiler Pump");
 Relay heatingPumpRelay(RELAY_HEATING_PUMP, "Heating Pump");
 Relay fansRelay(RELAY_FANS, "Fans");
 Relay otherRelay(RELAY_OTHER, "Other");
+
+// Which physical channel drives each function (editable from the UI)
+RelayConfig relayConfig;
+Relay* const relayByRole[RELAY_ROLE_COUNT] = { &boilerPumpRelay, &heatingPumpRelay, &fansRelay, &otherRelay };
 
 AirIntake airIntake;
 Display display;
@@ -49,119 +56,222 @@ unsigned long lastControlUpdate = 0;
 bool killSwitchActive = false;  // Killswitch state (emergency mode)
 bool isBurning        = false;  // cached each sensor read — used by PID block
 
-// Manual override mode
-bool          manualMode        = false;
-unsigned long manualModeStart   = 0;
-unsigned long manualModeTimeout = MANUAL_MODE_DEFAULT_TIMEOUT_MIN * 60UL * 1000UL;
+// Manual override mode — stays active until the user switches back to automatic
+// (or a critical temperature forces the safety routine). Not kept across reboots.
+// Written by the web task and read by loop(), hence volatile.
+volatile bool manualMode = false;
+
+// Dallas bus rescan requested from the web task; executed by loop() (sole owner of the 1-Wire bus)
+volatile bool dallasScanRequested = false;
+
+// OLED test frame requested from the UI (drawn by loop(), held for a few seconds)
+volatile bool displayTestRequested = false;
+unsigned long displayHoldUntil = 0;
+
+// Safe mode when the boiler-supply sensor is assigned but unreadable
+bool          waterSensorFault = false;
+unsigned long waterFaultSecs   = 0;
+
+// Temperature history (1/min for 1 h, then 1/5 min for 24 h)
+TemperatureHistory history;
+unsigned long lastHistoryRecord = 0;
 
 // Runtime-configurable settings (loaded from LittleFS, defaults from config.h)
 RuntimeSettings systemSettings;
 
 // Variables to store sensor values
-float ambientLowTemp   = 0;
-float boilerIronTemp   = 0;
-float mixSupplyTemp    = 0;
-float boilerSupplyTemp = 0;
-float floorSupplyTemp  = 0;
-float ambientHighTemp  = 0;
-float floorReturnTemp  = 0;
-float boilerReturnTemp = 0;
-float burningTemp      = 0;
+float ambientLowTemp   = NAN;
+float boilerIronTemp   = NAN;
+float mixSupplyTemp    = NAN;
+float boilerSupplyTemp = NAN;
+float floorSupplyTemp  = NAN;
+float ambientHighTemp  = NAN;
+float floorReturnTemp  = NAN;
+float boilerReturnTemp = NAN;
+float burningTemp      = NAN;
+
+// Point every relay at the channel pin chosen in relayConfig.
+// live=true (runtime change): all channel pins are first driven LOW, then each relay
+// re-applies its state on its new pin, so swapping two roles can't leave a stale output.
+void applyRelayMapping(bool live) {
+    if (live) {
+        for (int c = 0; c < RELAY_CHANNEL_COUNT; c++) {
+            pinMode(RELAY_CHANNEL_PINS[c], OUTPUT);
+            digitalWrite(RELAY_CHANNEL_PINS[c], LOW);
+        }
+    }
+    for (int r = 0; r < RELAY_ROLE_COUNT; r++) {
+        uint8_t pin = RELAY_CHANNEL_PINS[relayConfig.channelFor(r)];
+        if (live) relayByRole[r]->rebind(pin); else relayByRole[r]->setPin(pin);
+    }
+    if (live) for (int r = 0; r < RELAY_ROLE_COUNT; r++) relayByRole[r]->reapply();
+}
+
+// Temperatures indexed like the history channels (also the PID source index)
+float* const tempByChannel[HISTORY_CHANNELS] = {
+    &boilerSupplyTemp, &boilerReturnTemp, &boilerIronTemp, &floorSupplyTemp, &floorReturnTemp,
+    &mixSupplyTemp,    &ambientLowTemp,   &ambientHighTemp, &burningTemp
+};
+
+// Current value of the temperature the PID regulates (NAN if that sensor is missing)
+float pidProcessValue() {
+    int src = systemSettings.pidSource;
+    if (src < 0 || src >= HISTORY_CHANNELS) src = DEFAULT_PID_SOURCE;
+    return *tempByChannel[src];
+}
+
+// Human-readable cause of the last chip reset
+String bootReason = "?";
+const char* resetReasonText(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "Encendido / corte de alimentación";
+        case ESP_RST_EXT:       return "Pin de reset externo";
+        case ESP_RST_SW:        return "Reinicio por software (OTA o botón de la UI)";
+        case ESP_RST_PANIC:     return "FALLO del programa (panic / excepción)";
+        case ESP_RST_INT_WDT:   return "Watchdog de interrupciones (programa bloqueado)";
+        case ESP_RST_TASK_WDT:  return "Watchdog de tarea (bucle bloqueado)";
+        case ESP_RST_WDT:       return "Watchdog";
+        case ESP_RST_DEEPSLEEP: return "Salida de deep sleep";
+        case ESP_RST_BROWNOUT:  return "CAÍDA DE TENSIÓN (brownout)";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "Desconocido";
+    }
+}
+
+// ── Self-test (launched from the UI, never at boot) ──────────────────────────────
+// Needs manual mode: the relays are pulsed (inverted for a moment, then restored to the
+// state they had), so the automatic logic must not be driving them. Runs inside loop();
+// the control loop is paused for the few seconds it lasts.
+struct SelfTestState {
+    volatile bool running  = false;
+    volatile bool done     = false;
+    const char*   step     = "";
+    bool          error    = false;
+    const char*   errorMsg = "";
+    bool          displayOk   = false;
+    bool          tcOk        = false;
+    float         tcTemp      = NAN;
+    int           dallasCount = 0;
+    int           dallasValid = 0;
+    int           relaysPulsed = 0;
+} selfTest;
+volatile bool selfTestRequested = false;
 
 void runSelfTest() {
+    selfTest = SelfTestState();
+    selfTest.running = true;
     char buf[32];
 
+    if (!manualMode)    { selfTest.error = true; selfTest.errorMsg = "Requiere modo manual"; selfTest.running = false; selfTest.done = true; return; }
+    if (killSwitchActive) { selfTest.error = true; selfTest.errorMsg = "Temperatura crítica";  selfTest.running = false; selfTest.done = true; return; }
+
+    logBuffer.log("Self-test started (from UI)");
+    selfTest.displayOk = display.isAvailable();
+    selfTest.step = "pantalla";
     display.showMessage("Self-Test", "Display... OK");
-    delay(800);
+    delay(600);
 
-    Relay* relays[] = { &boilerPumpRelay, &heatingPumpRelay, &fansRelay, &otherRelay };
-    const char* relayNames[] = { "Boiler Pump", "Heating Pump", "Fans", "Other" };
-
-    for (int i = 0; i < 4; i++) {
-        snprintf(buf, sizeof(buf), "Relay: %s", relayNames[i]);
-        display.showMessage("Relay Test", buf, "-> ON");
-        relays[i]->forceState(true);
-        delay(600);
-        display.showMessage("Relay Test", buf, "-> OFF");
-        relays[i]->forceState(false);
-        delay(400);
+    // Relays: invert for a moment, then put back whatever state they had
+    for (int r = 0; r < RELAY_ROLE_COUNT; r++) {
+        Relay* rl = relayByRole[r];
+        selfTest.step = RelayConfig::roleLabel(r);
+        snprintf(buf, sizeof(buf), "%s (GPIO %d)", RelayConfig::roleId(r), rl->getPin());
+        bool prev = rl->getState();
+        display.showMessage("Relay Test", buf, prev ? "-> OFF (1 s)" : "-> ON (1 s)");
+        rl->forceState(!prev);
+        delay(1000);
+        rl->forceState(prev);
+        delay(300);
+        selfTest.relaysPulsed++;
     }
 
+    selfTest.step = "termopar";
     display.showMessage("Thermocouple", "MAX6675...");
     delay(300);
     float burnT = sensors.getBurningTemperature();
-    if (isnan(burnT)) {
-        display.showMessage("Thermocouple", "MAX6675:", "ERROR / no sensor");
-    } else {
-        snprintf(buf, sizeof(buf), "%.1f C", burnT);
-        display.showMessage("Thermocouple", "MAX6675:", buf, "OK");
-    }
-    delay(1200);
+    selfTest.tcTemp = burnT;
+    selfTest.tcOk = !isnan(burnT);
+    if (selfTest.tcOk) { snprintf(buf, sizeof(buf), "%.1f C", burnT); display.showMessage("Thermocouple", "MAX6675:", buf, "OK"); }
+    else                 display.showMessage("Thermocouple", "MAX6675:", "ERROR / no sensor");
+    delay(800);
 
+    selfTest.step = "Dallas";
     int n = sensors.getSensorCount();
-    snprintf(buf, sizeof(buf), "Found: %d sensor%s", n, n == 1 ? "" : "s");
-    display.showMessage("Dallas 1-Wire", buf);
-    delay(1000);
-
+    selfTest.dallasCount = n;
     sensors.requestTemperatures();
     delay(800);
-
-    for (int i = 0; i < n; i++) {
-        char addr[17];
-        sensors.getAddressStr(i, addr);
-        float t = sensors.getTempByIndex(i);
-        const char* role = sensors.getRoleByIndex(i);
-
-        char line1[32], line2[32], line3[32];
-        snprintf(line1, sizeof(line1), "Sensor %d/%d", i + 1, n);
-        snprintf(line2, sizeof(line2), "%.8s..%.6s", addr, addr + 10);
-        if (isnan(t) || t <= -100) {
-            snprintf(line3, sizeof(line3), "Err | %s", strlen(role) ? role : "unassigned");
-        } else {
-            snprintf(line3, sizeof(line3), "%.1fC | %s", t, strlen(role) ? role : "unassigned");
-        }
-        display.showMessage(line1, line2, line3);
-        delay(1500);
-    }
-
-    if (n == 0) {
-        display.showMessage("Dallas 1-Wire", "No sensors found!", "Check wiring");
-        delay(1500);
-    }
-
-    display.showMessage("Self-Test", "DONE", "Starting system...");
+    sensors.refreshCache();
+    for (int i = 0; i < n; i++)
+        if (TemperatureSensors::isValidDallasTemp(sensors.getTempByIndex(i))) selfTest.dallasValid++;
+    snprintf(buf, sizeof(buf), "%d/%d con lectura", selfTest.dallasValid, n);
+    display.showMessage("Dallas 1-Wire", buf);
     delay(800);
+
+    display.showMessage("Self-Test", "DONE");
+    delay(500);
+
+    logBuffer.log(String("Self-test done: thermocouple ") + (selfTest.tcOk ? "OK" : "ERROR") +
+                  ", Dallas " + String(selfTest.dallasValid) + "/" + String(n));
+    selfTest.running = false;
+    selfTest.done    = true;
 }
 
 // Functions to handle different system states and actions
+
+// Read every sensor. A failed reading becomes NAN (not the last good value), so the UI,
+// history and control logic all see the sensor as missing. Errors are logged once, when
+// a sensor goes bad, and again when it recovers — not every second.
 void readSensors() {
-    float t;
+    static bool wasValid[HISTORY_CHANNELS] = { true, true, true, true, true, true, true, true, true };
 
-    #define READ_DALLAS(getter, var, name) \
-        t = sensors.getter(); \
-        if (TemperatureSensors::isValidDallasTemp(t)) { var = t; } \
-        else { logBuffer.log("Sensor error: " name " = " + String(t)); }
+    auto update = [&](int ch, const char* name, float raw, bool valid, float& var) {
+        var = valid ? raw : NAN;
+        if (valid != wasValid[ch]) {
+            wasValid[ch] = valid;
+            logBuffer.log(valid ? String("Sensor OK again: ") + name
+                                : String("Sensor error: ") + name + " = " + String(raw));
+        }
+    };
+    auto dallas = [&](int ch, const char* name, float raw, float& var) {
+        update(ch, name, raw, TemperatureSensors::isValidDallasTemp(raw), var);
+    };
 
-    READ_DALLAS(getAmbientLowTemp,   ambientLowTemp,   "ambient_low")
-    READ_DALLAS(getBoilerIronTemp,   boilerIronTemp,   "boiler_iron")
-    READ_DALLAS(getMixSupplyTemp,    mixSupplyTemp,    "mix_supply")
-    READ_DALLAS(getBoilerSupplyTemp, boilerSupplyTemp, "boiler_supply")
-    READ_DALLAS(getFloorSupplyTemp,  floorSupplyTemp,  "floor_supply")
-    READ_DALLAS(getAmbientHighTemp,  ambientHighTemp,  "ambient_high")
-    READ_DALLAS(getFloorReturnTemp,  floorReturnTemp,  "floor_return")
-    READ_DALLAS(getBoilerReturnTemp, boilerReturnTemp, "boiler_return")
+    sensors.refreshCache();   // single pass over the 1-Wire bus per second
+    dallas(0, "boiler_supply", sensors.getBoilerSupplyTemp(), boilerSupplyTemp);
+    dallas(1, "boiler_return", sensors.getBoilerReturnTemp(), boilerReturnTemp);
+    dallas(2, "boiler_iron",   sensors.getBoilerIronTemp(),   boilerIronTemp);
+    dallas(3, "floor_supply",  sensors.getFloorSupplyTemp(),  floorSupplyTemp);
+    dallas(4, "floor_return",  sensors.getFloorReturnTemp(),  floorReturnTemp);
+    dallas(5, "mix_supply",    sensors.getMixSupplyTemp(),    mixSupplyTemp);
+    dallas(6, "ambient_low",   sensors.getAmbientLowTemp(),   ambientLowTemp);
+    dallas(7, "ambient_high",  sensors.getAmbientHighTemp(),  ambientHighTemp);
 
-    #undef READ_DALLAS
-
-    t = sensors.getBurningTemperature();
-    if (!isnan(t) && t >= 0) {
-        burningTemp = t;
-    } else {
-        logBuffer.log("Sensor error: thermocouple = NaN");
-    }
+    float t = sensors.getBurningTemperature();
+    update(8, "thermocouple", t, !isnan(t) && t >= 0, burningTemp);
 
     // Request next conversion (non-blocking, result available next cycle)
     sensors.requestTemperatures();
+}
+
+// Push one sample into the history ring buffers
+void recordHistory() {
+    int16_t temps[HISTORY_CHANNELS] = {
+        TemperatureHistory::encode(boilerSupplyTemp, !isnan(boilerSupplyTemp)),
+        TemperatureHistory::encode(boilerReturnTemp, !isnan(boilerReturnTemp)),
+        TemperatureHistory::encode(boilerIronTemp,   !isnan(boilerIronTemp)),
+        TemperatureHistory::encode(floorSupplyTemp,  !isnan(floorSupplyTemp)),
+        TemperatureHistory::encode(floorReturnTemp,  !isnan(floorReturnTemp)),
+        TemperatureHistory::encode(mixSupplyTemp,    !isnan(mixSupplyTemp)),
+        TemperatureHistory::encode(ambientLowTemp,   !isnan(ambientLowTemp)),
+        TemperatureHistory::encode(ambientHighTemp,  !isnan(ambientHighTemp)),
+        TemperatureHistory::encode(burningTemp,      !isnan(burningTemp)),
+    };
+    uint8_t flags = (boilerPumpRelay.getState()  ? HIST_FLAG_BOILER_PUMP  : 0)
+                  | (heatingPumpRelay.getState() ? HIST_FLAG_HEATING_PUMP : 0)
+                  | (fansRelay.getState()        ? HIST_FLAG_FANS         : 0)
+                  | (otherRelay.getState()       ? HIST_FLAG_OTHER        : 0)
+                  | (manualMode                  ? HIST_FLAG_MANUAL       : 0);
+    history.record(temps, (uint8_t)constrain((int)airIntake.getCurrentOutput(), 0, 100), flags);
 }
 
 void handleCriticalTemperature() {
@@ -203,6 +313,23 @@ void handleNormalOperation(bool isBurning, bool isBoilerWaterHot) {
     fansRelay.setState(isBurning);
 }
 
+// Boiler-supply sensor unreadable → water temperature unknown. While there is a heat
+// source (combustion or hot iron body): pumps forced ON to carry heat away and the air
+// damper closed so the fire dies down. With no heat source, behave normally.
+void handleSensorFault(bool isBurning) {
+    bool ironWarm = TemperatureSensors::isValidDallasTemp(boilerIronTemp)
+                    && boilerIronTemp > systemSettings.boilerIronThreshold;
+    if (isBurning || ironWarm) {
+        boilerPumpRelay.forceState(true);
+        heatingPumpRelay.forceState(true);
+        fansRelay.setState(isBurning);
+        airIntake.setPosition(0);
+    } else {
+        handleNormalOperation(false, false);
+        airIntake.setPosition(0);
+    }
+}
+
 void turnOffAllRelays() {
     boilerPumpRelay.forceState(false);
     heatingPumpRelay.forceState(false);
@@ -226,13 +353,41 @@ void updateHomeAssistant() {
     }
 }
 
+// Collects a (possibly fragmented) request body. Returns a NUL-terminated buffer once
+// the whole body arrived, nullptr otherwise (the buffer is owned and freed by the request).
+static char* collectBody(AsyncWebServerRequest* req, uint8_t* data, size_t len,
+                         size_t index, size_t total, size_t maxSize = 4096) {
+    if (total == 0 || total > maxSize) {
+        if (index == 0) req->send(413, "application/json", "{\"success\":false,\"error\":\"Bad body size\"}");
+        return nullptr;
+    }
+    if (index == 0) {
+        req->_tempObject = malloc(total + 1);
+        if (!req->_tempObject) {
+            req->send(500, "application/json", "{\"success\":false,\"error\":\"Out of memory\"}");
+            return nullptr;
+        }
+    }
+    if (!req->_tempObject) return nullptr;
+    memcpy((uint8_t*)req->_tempObject + index, data, len);
+    if (index + len < total) return nullptr;
+    ((char*)req->_tempObject)[total] = '\0';
+    return (char*)req->_tempObject;
+}
+
 // Callback to receive MQTT messages
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
     String topicStr = String(topic);
-    payload[length] = '\0';
-    String message = String((char*)payload);
+    String message;
+    message.concat((const char*)payload, length);
 
     logBuffer.log("MQTT received: " + topicStr + " -> " + message);
+
+    // Relay commands are ignored while the user drives the actuators by hand
+    if (manualMode && !topicStr.endsWith("/set/target_burning_temp")) {
+        logBuffer.log("MQTT command ignored: manual mode active");
+        return;
+    }
 
     if (topicStr.endsWith("/set/target_burning_temp")) {
         float targetTemp = message.toFloat();
@@ -356,6 +511,9 @@ void setup() {
     Serial.println("\n\n--- Lumber Boiler Manager ---");
     Serial.println("Starting...");
 
+    // Temperature history buffers
+    history.begin();
+
     // Initialize log system
     logBuffer.begin();
     logBuffer.log("System started");
@@ -376,6 +534,10 @@ void setup() {
     sensors.begin();
     logBuffer.log("Temperature sensors initialized");
 
+    // Load which channel drives which function, then initialise relays on those pins
+    relayConfig.begin();
+    applyRelayMapping(false);
+
     // Initialize relays
     boilerPumpRelay.begin();
     heatingPumpRelay.begin();
@@ -392,11 +554,10 @@ void setup() {
         otherRelay.setDebounce(debounceMs);
     }
 
-    // Apply runtime settings to sensors, air intake, MQTT and manual mode
+    // Apply runtime settings to sensors, air intake and MQTT
     sensors.setBurningThreshold(systemSettings.burningTempThreshold);
     sensors.setBoilerWaterThreshold(systemSettings.boilerWaterTempThreshold);
     sensors.setBoilerWaterCriticalTemp(systemSettings.boilerWaterCriticalTemp);
-    manualModeTimeout = systemSettings.manualModeTimeoutMin * 60UL * 1000UL;
     homeAssistant.configure(
         systemSettings.mqttServer, systemSettings.mqttPort,
         systemSettings.mqttUser,   systemSettings.mqttPassword,
@@ -457,7 +618,7 @@ void setup() {
         // Create JSON response with current system state
         AsyncResponseStream *response = request->beginResponseStream("application/json");
 
-        StaticJsonDocument<768> doc;
+        StaticJsonDocument<1024> doc;
         auto setTemp = [&](const char* key, float v) {
             if (TemperatureSensors::isValidDallasTemp(v)) doc[key] = v; else doc[key] = nullptr;
         };
@@ -469,7 +630,7 @@ void setup() {
         setTemp("ambient_high",  ambientHighTemp);
         setTemp("floor_return",  floorReturnTemp);
         setTemp("boiler_return", boilerReturnTemp);
-        if (!isnan(burningTemp) && burningTemp >= 0) doc["burning_temp"] = burningTemp; else doc["burning_temp"] = nullptr;
+        if (!isnan(burningTemp)) doc["burning_temp"] = burningTemp; else doc["burning_temp"] = nullptr;
         doc["boiler_pump"]         = boilerPumpRelay.getState();
         doc["boiler_pump_desired"] = boilerPumpRelay.getDesiredState();
         doc["heating_pump"]        = heatingPumpRelay.getState();
@@ -483,12 +644,11 @@ void setup() {
         doc["auto_tuning"] = airIntake.isAutoTuning();
         doc["killswitch_active"] = killSwitchActive;
         doc["manual_mode"] = manualMode;
-        doc["manual_timeout_minutes"] = manualModeTimeout / 60000UL;
-        if (manualMode) {
-            unsigned long elapsed = millis() - manualModeStart;
-            doc["manual_remaining_seconds"] =
-                (manualModeTimeout > elapsed) ? (manualModeTimeout - elapsed) / 1000UL : 0;
-        }
+        doc["uptime_s"] = millis() / 1000UL;
+        doc["pid_source"] = systemSettings.pidSource;
+        doc["water_sensor_fault"] = waterSensorFault;
+        doc["reset_reason"] = bootReason;
+        { float pv = pidProcessValue(); if (!isnan(pv)) doc["pid_value"] = pv; else doc["pid_value"] = nullptr; }
 
         // Add servo range configuration
         doc["servo_min"] = airIntake.getServoMin();
@@ -545,8 +705,11 @@ void setup() {
                             airIntake.cancelAutoTune();
                             logBuffer.log("PID auto-tuning canceled");
                         } else {
-                            // Start new auto-tuning
-                            if (airIntake.startAutoTune()) {
+                            // Start new auto-tuning (needs combustion, automatic mode, no alarms:
+                            // the PID — and so the tuning — only runs in that situation)
+                            if (!isBurning || manualMode || killSwitchActive || waterSensorFault) {
+                                logBuffer.log("PID auto-tuning refused: needs combustion, automatic mode and no alarms");
+                            } else if (airIntake.startAutoTune()) {
                                 logBuffer.log("Starting PID auto-tuning. This may take several minutes...");
                             } else {
                                 logBuffer.log("Could not start PID auto-tuning");
@@ -599,8 +762,8 @@ void setup() {
         assignments[ROLE_FLOOR_RETURN]  = sensorConfig.floorReturnAddr;
         assignments[ROLE_BOILER_RETURN] = sensorConfig.boilerReturnAddr;
 
-        float tcTemp = sensors.getBurningTemperature();
-        if (!isnan(tcTemp) && tcTemp >= 0) doc["thermocouple_temp"] = tcTemp; else doc["thermocouple_temp"] = nullptr;
+        // Cached value: don't bit-bang the MAX6675 from the web task
+        if (!isnan(burningTemp)) doc["thermocouple_temp"] = burningTemp; else doc["thermocouple_temp"] = nullptr;
         doc["count"] = n;
 
         serializeJson(doc, *response);
@@ -662,11 +825,10 @@ void setup() {
 
     // POST /api/dallas/scan — rescan the 1-Wire bus
     webServer.on("/api/dallas/scan", HTTP_POST, [](AsyncWebServerRequest *request) {
-        int n = sensors.scanSensors();
-        sensors.requestTemperatures();
-        String resp = "{\"success\":true,\"count\":" + String(n) + "}";
-        request->send(200, "application/json", resp);
-        logBuffer.log("Dallas bus rescanned: " + String(n) + " sensors found");
+        // The loop task owns the 1-Wire bus: just ask it to rescan on its next pass
+        dallasScanRequested = true;
+        request->send(200, "application/json",
+            "{\"success\":true,\"count\":" + String(sensors.getSensorCount()) + ",\"scanning\":true}");
     });
 
     // ── WiFi config API ─────────────────────────────────────────────────────
@@ -748,148 +910,9 @@ void setup() {
 
     // ── System configuration API ───────────────────────────────────────────
 
-    // GET /api/config — return all runtime-configurable settings
-    webServer.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        StaticJsonDocument<512> doc;
-        doc["burning_temp_threshold"] = systemSettings.burningTempThreshold;
-        doc["boiler_water_threshold"] = systemSettings.boilerWaterTempThreshold;
-        doc["boiler_water_critical"]  = systemSettings.boilerWaterCriticalTemp;
-        doc["target_burning_temp"]    = systemSettings.targetBurningTemp;
-        doc["pid_kp"]                 = systemSettings.pidKp;
-        doc["pid_ki"]                 = systemSettings.pidKi;
-        doc["pid_kd"]                 = systemSettings.pidKd;
-        doc["servo_min"]              = systemSettings.servoMin;
-        doc["servo_max"]              = systemSettings.servoMax;
-        doc["manual_timeout_min"]     = systemSettings.manualModeTimeoutMin;
-        doc["relay_debounce_min"]     = systemSettings.relayDebounceMin;
-        doc["boiler_iron_threshold"]  = systemSettings.boilerIronThreshold;
-        doc["floor_delta_threshold"]  = systemSettings.floorDeltaThreshold;
-        doc["mqtt_server"]            = systemSettings.mqttServer;
-        doc["mqtt_port"]              = systemSettings.mqttPort;
-        doc["mqtt_user"]              = systemSettings.mqttUser;
-        // password intentionally omitted from GET — send non-empty string in POST to update
-        doc["mqtt_base_topic"]        = systemSettings.mqttBaseTopic;
-        // Hardware / validity constants (used by the UI to avoid hardcoding)
-        doc["one_wire_pin"]           = ONE_WIRE_PIN;
-        doc["dallas_min_valid_temp"]  = DALLAS_MIN_VALID_TEMP;
-        doc["dallas_max_valid_temp"]  = DALLAS_MAX_VALID_TEMP;
-        doc["target_temp_min"]        = TARGET_TEMP_MIN;
-        doc["target_temp_max"]        = TARGET_TEMP_MAX;
-        // Include compile-time defaults for reference in the UI
-        JsonObject defaults = doc.createNestedObject("defaults");
-        defaults["burning_temp_threshold"] = BURNING_TEMP_THRESHOLD;
-        defaults["boiler_water_threshold"] = BOILER_WATER_TEMP_THRESHOLD;
-        defaults["boiler_water_critical"]  = BOILER_WATER_CRITICAL_TEMP;
-        defaults["target_burning_temp"]    = DEFAULT_TARGET_BURNING_TEMP;
-        defaults["pid_kp"]                 = PID_KP;
-        defaults["pid_ki"]                 = PID_KI;
-        defaults["pid_kd"]                 = PID_KD;
-        defaults["servo_min"]              = DEFAULT_SERVO_MIN;
-        defaults["servo_max"]              = DEFAULT_SERVO_MAX;
-        defaults["manual_timeout_min"]     = MANUAL_MODE_DEFAULT_TIMEOUT_MIN;
-        defaults["relay_debounce_min"]     = RELAY_DEBOUNCE_MIN;
-        defaults["boiler_iron_threshold"]  = BOILER_IRON_PUMP_THRESHOLD;
-        defaults["floor_delta_threshold"]  = FLOOR_DELTA_THRESHOLD;
-        defaults["mqtt_server"]            = MQTT_SERVER;
-        defaults["mqtt_port"]              = MQTT_PORT;
-        defaults["mqtt_user"]              = MQTT_USER;
-        defaults["mqtt_base_topic"]        = MQTT_BASE_TOPIC;
-        serializeJson(doc, *response);
-        request->send(response);
-    });
-
-    // POST /api/config — update one or more settings (partial update supported)
-    // Any missing key keeps its current value
-    webServer.on("/api/config", HTTP_POST,
-        [](AsyncWebServerRequest *request) {},
-        nullptr,
-        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-            StaticJsonDocument<512> doc;
-            if (deserializeJson(doc, data, len)) {
-                request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
-                return;
-            }
-
-            // Update only the fields present in the request
-            if (doc.containsKey("burning_temp_threshold"))
-                systemSettings.burningTempThreshold    = doc["burning_temp_threshold"];
-            if (doc.containsKey("boiler_water_threshold"))
-                systemSettings.boilerWaterTempThreshold = doc["boiler_water_threshold"];
-            if (doc.containsKey("boiler_water_critical"))
-                systemSettings.boilerWaterCriticalTemp  = doc["boiler_water_critical"];
-            if (doc.containsKey("target_burning_temp"))
-                systemSettings.targetBurningTemp        = doc["target_burning_temp"];
-            if (doc.containsKey("pid_kp"))  systemSettings.pidKp = doc["pid_kp"];
-            if (doc.containsKey("pid_ki"))  systemSettings.pidKi = doc["pid_ki"];
-            if (doc.containsKey("pid_kd"))  systemSettings.pidKd = doc["pid_kd"];
-            if (doc.containsKey("servo_min")) systemSettings.servoMin = doc["servo_min"];
-            if (doc.containsKey("servo_max")) systemSettings.servoMax = doc["servo_max"];
-            if (doc.containsKey("manual_timeout_min"))
-                systemSettings.manualModeTimeoutMin = doc["manual_timeout_min"];
-            if (doc.containsKey("relay_debounce_min")) {
-                systemSettings.relayDebounceMin = doc["relay_debounce_min"];
-                unsigned long ms = (unsigned long)systemSettings.relayDebounceMin * 60000UL;
-                boilerPumpRelay.setDebounce(ms);
-                heatingPumpRelay.setDebounce(ms);
-                fansRelay.setDebounce(ms);
-                otherRelay.setDebounce(ms);
-            }
-            if (doc.containsKey("boiler_iron_threshold"))
-                systemSettings.boilerIronThreshold = doc["boiler_iron_threshold"];
-            if (doc.containsKey("floor_delta_threshold"))
-                systemSettings.floorDeltaThreshold = doc["floor_delta_threshold"];
-
-            bool mqttChanged = false;
-            if (doc.containsKey("mqtt_server")) {
-                strlcpy(systemSettings.mqttServer, doc["mqtt_server"] | "", sizeof(systemSettings.mqttServer));
-                mqttChanged = true;
-            }
-            if (doc.containsKey("mqtt_port")) {
-                systemSettings.mqttPort = doc["mqtt_port"].as<uint16_t>();
-                mqttChanged = true;
-            }
-            if (doc.containsKey("mqtt_user")) {
-                strlcpy(systemSettings.mqttUser, doc["mqtt_user"] | "", sizeof(systemSettings.mqttUser));
-                mqttChanged = true;
-            }
-            if (doc.containsKey("mqtt_password") && strlen(doc["mqtt_password"] | "") > 0) {
-                strlcpy(systemSettings.mqttPassword, doc["mqtt_password"] | "", sizeof(systemSettings.mqttPassword));
-                mqttChanged = true;
-            }
-            if (doc.containsKey("mqtt_base_topic")) {
-                strlcpy(systemSettings.mqttBaseTopic, doc["mqtt_base_topic"] | "", sizeof(systemSettings.mqttBaseTopic));
-                mqttChanged = true;
-            }
-
-            // Apply immediately to running components
-            sensors.setBurningThreshold(systemSettings.burningTempThreshold);
-            sensors.setBoilerWaterThreshold(systemSettings.boilerWaterTempThreshold);
-            sensors.setBoilerWaterCriticalTemp(systemSettings.boilerWaterCriticalTemp);
-            airIntake.setTargetTemperature(systemSettings.targetBurningTemp);
-            airIntake.setTunings(systemSettings.pidKp, systemSettings.pidKi, systemSettings.pidKd);
-            airIntake.setServoMin(systemSettings.servoMin);
-            airIntake.setServoMax(systemSettings.servoMax);
-            manualModeTimeout = systemSettings.manualModeTimeoutMin * 60UL * 1000UL;
-            if (mqttChanged) {
-                homeAssistant.configure(
-                    systemSettings.mqttServer, systemSettings.mqttPort,
-                    systemSettings.mqttUser,   systemSettings.mqttPassword,
-                    systemSettings.mqttBaseTopic
-                );
-                homeAssistant.forceReconnect(); // NetworkManager will reconnect on next cycle
-                logBuffer.log("MQTT config updated, reconnecting...");
-            }
-
-            // Persist to LittleFS
-            bool saved = systemSettings.save();
-            logBuffer.log(saved ? "Settings saved to LittleFS" : "Settings applied (save failed)");
-
-            request->send(200, "application/json", saved
-                ? "{\"success\":true}"
-                : "{\"success\":true,\"warning\":\"Could not persist to flash\"}");
-        }
-    );
+    // NOTE on route order: ESPAsyncWebServer matches by prefix ("/api/config" also matches
+    // "/api/config/export"), and the first registered handler wins. Register the specific
+    // sub-routes BEFORE their base route, or the base handler swallows them.
 
     // GET /api/config/export — full backup: all settings + sensor role assignments
     webServer.on("/api/config/export", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -904,12 +927,12 @@ void setup() {
         s["boiler_water_threshold"] = systemSettings.boilerWaterTempThreshold;
         s["boiler_water_critical"]  = systemSettings.boilerWaterCriticalTemp;
         s["target_burning_temp"]    = systemSettings.targetBurningTemp;
+        s["pid_source"]             = systemSettings.pidSource;
         s["pid_kp"]                 = systemSettings.pidKp;
         s["pid_ki"]                 = systemSettings.pidKi;
         s["pid_kd"]                 = systemSettings.pidKd;
         s["servo_min"]              = systemSettings.servoMin;
         s["servo_max"]              = systemSettings.servoMax;
-        s["manual_timeout_min"]     = systemSettings.manualModeTimeoutMin;
         s["relay_debounce_min"]     = systemSettings.relayDebounceMin;
         s["boiler_iron_threshold"]  = systemSettings.boilerIronThreshold;
         s["floor_delta_threshold"]  = systemSettings.floorDeltaThreshold;
@@ -918,6 +941,9 @@ void setup() {
         s["mqtt_user"]              = systemSettings.mqttUser;
         s["mqtt_password"]          = systemSettings.mqttPassword;
         s["mqtt_base_topic"]        = systemSettings.mqttBaseTopic;
+
+        JsonObject relayMap = doc.createNestedObject("relay_map");
+        for (int r = 0; r < RELAY_ROLE_COUNT; r++) relayMap[RelayConfig::roleId(r)] = relayConfig.channelFor(r);
 
         JsonObject roles = doc.createNestedObject("sensor_roles");
         roles[ROLE_AMBIENT_LOW]   = sensorConfig.ambientLowAddr;
@@ -939,25 +965,31 @@ void setup() {
         [](AsyncWebServerRequest *request) {},
         nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            char* body = collectBody(request, data, len, index, total, 6144);
+            if (!body) return;
             StaticJsonDocument<2048> doc;
-            if (deserializeJson(doc, data, len)) {
+            if (deserializeJson(doc, body)) {
                 request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
                 return;
             }
 
-            // Restore settings
+            // Restore settings (rolled back if the imported set is not coherent)
             if (doc.containsKey("settings")) {
+                RuntimeSettings backup = systemSettings;
                 JsonObjectConst s = doc["settings"].as<JsonObjectConst>();
                 if (s.containsKey("burning_temp_threshold")) systemSettings.burningTempThreshold    = s["burning_temp_threshold"];
                 if (s.containsKey("boiler_water_threshold")) systemSettings.boilerWaterTempThreshold = s["boiler_water_threshold"];
                 if (s.containsKey("boiler_water_critical"))  systemSettings.boilerWaterCriticalTemp  = s["boiler_water_critical"];
                 if (s.containsKey("target_burning_temp"))    systemSettings.targetBurningTemp        = s["target_burning_temp"];
+                if (s.containsKey("pid_source")) {
+                    int src = s["pid_source"] | -1;
+                    if (src >= 0 && src < HISTORY_CHANNELS) systemSettings.pidSource = src;
+                }
                 if (s.containsKey("pid_kp"))   systemSettings.pidKp = s["pid_kp"];
                 if (s.containsKey("pid_ki"))   systemSettings.pidKi = s["pid_ki"];
                 if (s.containsKey("pid_kd"))   systemSettings.pidKd = s["pid_kd"];
                 if (s.containsKey("servo_min"))          systemSettings.servoMin             = s["servo_min"];
                 if (s.containsKey("servo_max"))          systemSettings.servoMax             = s["servo_max"];
-                if (s.containsKey("manual_timeout_min")) systemSettings.manualModeTimeoutMin = s["manual_timeout_min"];
                 if (s.containsKey("relay_debounce_min")) {
                     systemSettings.relayDebounceMin = s["relay_debounce_min"];
                     unsigned long ms = (unsigned long)systemSettings.relayDebounceMin * 60000UL;
@@ -979,6 +1011,13 @@ void setup() {
                 if (s.containsKey("mqtt_base_topic"))
                     strlcpy(systemSettings.mqttBaseTopic, s["mqtt_base_topic"] | "", sizeof(systemSettings.mqttBaseTopic));
 
+                if (const char* err = systemSettings.validate()) {
+                    systemSettings = backup;
+                    request->send(400, "application/json", String("{\"success\":false,\"error\":\"Importación rechazada: ") + err + "\"}");
+                    logBuffer.log(String("Config import rejected: ") + err);
+                    return;
+                }
+
                 sensors.setBurningThreshold(systemSettings.burningTempThreshold);
                 sensors.setBoilerWaterThreshold(systemSettings.boilerWaterTempThreshold);
                 sensors.setBoilerWaterCriticalTemp(systemSettings.boilerWaterCriticalTemp);
@@ -986,13 +1025,22 @@ void setup() {
                 airIntake.setTunings(systemSettings.pidKp, systemSettings.pidKi, systemSettings.pidKd);
                 airIntake.setServoMin(systemSettings.servoMin);
                 airIntake.setServoMax(systemSettings.servoMax);
-                manualModeTimeout = systemSettings.manualModeTimeoutMin * 60UL * 1000UL;
                 homeAssistant.configure(
                     systemSettings.mqttServer, systemSettings.mqttPort,
                     systemSettings.mqttUser,   systemSettings.mqttPassword,
                     systemSettings.mqttBaseTopic
                 );
                 systemSettings.save();
+            }
+
+            // Restore relay → channel assignment (a valid permutation reproduces exactly)
+            if (doc.containsKey("relay_map")) {
+                JsonObjectConst m = doc["relay_map"].as<JsonObjectConst>();
+                for (int r = 0; r < RELAY_ROLE_COUNT; r++) {
+                    const char* id = RelayConfig::roleId(r);
+                    if (m.containsKey(id)) relayConfig.assign(r, m[id] | -1);
+                }
+                applyRelayMapping(true);
             }
 
             // Restore sensor role assignments (set fields directly, one save at the end)
@@ -1026,7 +1074,6 @@ void setup() {
         airIntake.setTunings(systemSettings.pidKp, systemSettings.pidKi, systemSettings.pidKd);
         airIntake.setServoMin(systemSettings.servoMin);
         airIntake.setServoMax(systemSettings.servoMax);
-        manualModeTimeout = systemSettings.manualModeTimeoutMin * 60UL * 1000UL;
         {
             unsigned long ms = (unsigned long)systemSettings.relayDebounceMin * 60000UL;
             boilerPumpRelay.setDebounce(ms);
@@ -1045,100 +1092,362 @@ void setup() {
         request->send(200, "application/json", "{\"success\":true}");
     });
 
-    // ── Manual override API ────────────────────────────────────────────────
-
-    // GET /api/manual — current manual mode state
-    webServer.on("/api/manual", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // GET /api/config — return all runtime-configurable settings
+    webServer.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
         AsyncResponseStream *response = request->beginResponseStream("application/json");
-        StaticJsonDocument<128> doc;
-        doc["active"]           = manualMode;
-        doc["timeout_minutes"]  = manualModeTimeout / 60000UL;
-        if (manualMode) {
-            unsigned long elapsed = millis() - manualModeStart;
-            doc["remaining_seconds"] =
-                (manualModeTimeout > elapsed) ? (manualModeTimeout - elapsed) / 1000UL : 0;
-        }
+        StaticJsonDocument<1536> doc;
+        doc["burning_temp_threshold"] = systemSettings.burningTempThreshold;
+        doc["boiler_water_threshold"] = systemSettings.boilerWaterTempThreshold;
+        doc["boiler_water_critical"]  = systemSettings.boilerWaterCriticalTemp;
+        doc["target_burning_temp"]    = systemSettings.targetBurningTemp;
+        doc["pid_source"]             = systemSettings.pidSource;
+        doc["pid_kp"]                 = systemSettings.pidKp;
+        doc["pid_ki"]                 = systemSettings.pidKi;
+        doc["pid_kd"]                 = systemSettings.pidKd;
+        doc["servo_min"]              = systemSettings.servoMin;
+        doc["servo_max"]              = systemSettings.servoMax;
+        doc["relay_debounce_min"]     = systemSettings.relayDebounceMin;
+        doc["boiler_iron_threshold"]  = systemSettings.boilerIronThreshold;
+        doc["floor_delta_threshold"]  = systemSettings.floorDeltaThreshold;
+        doc["mqtt_server"]            = systemSettings.mqttServer;
+        doc["mqtt_port"]              = systemSettings.mqttPort;
+        doc["mqtt_user"]              = systemSettings.mqttUser;
+        // password intentionally omitted from GET — send non-empty string in POST to update
+        doc["mqtt_base_topic"]        = systemSettings.mqttBaseTopic;
+        // Hardware / validity constants (used by the UI to avoid hardcoding)
+        doc["one_wire_pin"]           = ONE_WIRE_PIN;
+        doc["dallas_min_valid_temp"]  = DALLAS_MIN_VALID_TEMP;
+        doc["dallas_max_valid_temp"]  = DALLAS_MAX_VALID_TEMP;
+        doc["target_temp_min"]        = TARGET_TEMP_MIN;
+        doc["target_temp_max"]        = TARGET_TEMP_MAX;
+        // Include compile-time defaults for reference in the UI
+        JsonObject defaults = doc.createNestedObject("defaults");
+        defaults["burning_temp_threshold"] = BURNING_TEMP_THRESHOLD;
+        defaults["boiler_water_threshold"] = BOILER_WATER_TEMP_THRESHOLD;
+        defaults["boiler_water_critical"]  = BOILER_WATER_CRITICAL_TEMP;
+        defaults["target_burning_temp"]    = DEFAULT_TARGET_BURNING_TEMP;
+        defaults["pid_source"]             = DEFAULT_PID_SOURCE;
+        defaults["pid_kp"]                 = PID_KP;
+        defaults["pid_ki"]                 = PID_KI;
+        defaults["pid_kd"]                 = PID_KD;
+        defaults["servo_min"]              = DEFAULT_SERVO_MIN;
+        defaults["servo_max"]              = DEFAULT_SERVO_MAX;
+        defaults["relay_debounce_min"]     = RELAY_DEBOUNCE_MIN;
+        defaults["boiler_iron_threshold"]  = BOILER_IRON_PUMP_THRESHOLD;
+        defaults["floor_delta_threshold"]  = FLOOR_DELTA_THRESHOLD;
+        defaults["mqtt_server"]            = MQTT_SERVER;
+        defaults["mqtt_port"]              = MQTT_PORT;
+        defaults["mqtt_user"]              = MQTT_USER;
+        defaults["mqtt_base_topic"]        = MQTT_BASE_TOPIC;
         serializeJson(doc, *response);
         request->send(response);
     });
 
-    // POST /api/manual
-    // {"active": true}                     — enable with current timeout
-    // {"active": false}                    — return to automatic immediately
-    // {"active": true, "timeout_minutes": 15} — enable with custom timeout
-    webServer.on("/api/manual", HTTP_POST,
+    // POST /api/config — update one or more settings (partial update supported)
+    // Any missing key keeps its current value
+    webServer.on("/api/config", HTTP_POST,
         [](AsyncWebServerRequest *request) {},
         nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-            StaticJsonDocument<128> doc;
-            if (deserializeJson(doc, data, len)) {
+            char* body = collectBody(request, data, len, index, total);
+            if (!body) return;
+            StaticJsonDocument<768> doc;
+            if (deserializeJson(doc, body)) {
                 request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
                 return;
             }
 
-            bool activate = doc["active"] | false;
+            // Work on a copy: nothing changes unless the whole set is coherent
+            RuntimeSettings next = systemSettings;
 
-            if (doc.containsKey("timeout_minutes")) {
-                unsigned long mins = doc["timeout_minutes"].as<unsigned long>();
-                if (mins > 0 && mins <= 120) {
-                    manualModeTimeout = mins * 60UL * 1000UL;
-                }
+            // Update only the fields present in the request
+            if (doc.containsKey("burning_temp_threshold"))
+                next.burningTempThreshold    = doc["burning_temp_threshold"];
+            if (doc.containsKey("boiler_water_threshold"))
+                next.boilerWaterTempThreshold = doc["boiler_water_threshold"];
+            if (doc.containsKey("boiler_water_critical"))
+                next.boilerWaterCriticalTemp  = doc["boiler_water_critical"];
+            if (doc.containsKey("target_burning_temp"))
+                next.targetBurningTemp        = doc["target_burning_temp"];
+            if (doc.containsKey("pid_source")) next.pidSource = doc["pid_source"] | -1;
+            if (doc.containsKey("pid_kp"))  next.pidKp = doc["pid_kp"];
+            if (doc.containsKey("pid_ki"))  next.pidKi = doc["pid_ki"];
+            if (doc.containsKey("pid_kd"))  next.pidKd = doc["pid_kd"];
+            if (doc.containsKey("servo_min")) next.servoMin = doc["servo_min"];
+            if (doc.containsKey("servo_max")) next.servoMax = doc["servo_max"];
+            if (doc.containsKey("relay_debounce_min")) next.relayDebounceMin = doc["relay_debounce_min"];
+            if (doc.containsKey("boiler_iron_threshold"))
+                next.boilerIronThreshold = doc["boiler_iron_threshold"];
+            if (doc.containsKey("floor_delta_threshold"))
+                next.floorDeltaThreshold = doc["floor_delta_threshold"];
+
+            bool mqttChanged = false;
+            if (doc.containsKey("mqtt_server")) {
+                strlcpy(next.mqttServer, doc["mqtt_server"] | "", sizeof(next.mqttServer));
+                mqttChanged = true;
+            }
+            if (doc.containsKey("mqtt_port")) {
+                next.mqttPort = doc["mqtt_port"].as<uint16_t>();
+                mqttChanged = true;
+            }
+            if (doc.containsKey("mqtt_user")) {
+                strlcpy(next.mqttUser, doc["mqtt_user"] | "", sizeof(next.mqttUser));
+                mqttChanged = true;
+            }
+            if (doc.containsKey("mqtt_password") && strlen(doc["mqtt_password"] | "") > 0) {
+                strlcpy(next.mqttPassword, doc["mqtt_password"] | "", sizeof(next.mqttPassword));
+                mqttChanged = true;
+            }
+            if (doc.containsKey("mqtt_base_topic")) {
+                strlcpy(next.mqttBaseTopic, doc["mqtt_base_topic"] | "", sizeof(next.mqttBaseTopic));
+                mqttChanged = true;
             }
 
-            if (activate && !manualMode) {
-                manualMode      = true;
-                manualModeStart = millis();
-                logBuffer.log("Manual mode ON (timeout: " + String(manualModeTimeout / 60000UL) + " min)");
-            } else if (!activate && manualMode) {
-                manualMode = false;
-                logBuffer.log("Manual mode OFF — automatic control restored");
+            if (const char* err = next.validate()) {
+                request->send(400, "application/json",
+                    String("{\"success\":false,\"error\":\"") + err + "\"}");
+                logBuffer.log(String("Config rejected: ") + err);
+                return;
+            }
+            bool pidSourceChanged = next.pidSource != systemSettings.pidSource;
+            systemSettings = next;
+            if (pidSourceChanged) {
+                airIntake.resumeFromCurrent();   // different process variable: restart PID smoothly
+                logBuffer.log(String("PID source: ") + TemperatureHistory::channelName(systemSettings.pidSource));
+            }
+            {
+                unsigned long ms = (unsigned long)systemSettings.relayDebounceMin * 60000UL;
+                boilerPumpRelay.setDebounce(ms);
+                heatingPumpRelay.setDebounce(ms);
+                fansRelay.setDebounce(ms);
+                otherRelay.setDebounce(ms);
             }
 
-            AsyncResponseStream *response = request->beginResponseStream("application/json");
-            StaticJsonDocument<64> resp;
-            resp["success"] = true;
-            resp["active"]  = manualMode;
-            serializeJson(resp, *response);
-            request->send(response);
+            // Apply immediately to running components
+            sensors.setBurningThreshold(systemSettings.burningTempThreshold);
+            sensors.setBoilerWaterThreshold(systemSettings.boilerWaterTempThreshold);
+            sensors.setBoilerWaterCriticalTemp(systemSettings.boilerWaterCriticalTemp);
+            airIntake.setTargetTemperature(systemSettings.targetBurningTemp);
+            airIntake.setTunings(systemSettings.pidKp, systemSettings.pidKi, systemSettings.pidKd);
+            airIntake.setServoRange(systemSettings.servoMin, systemSettings.servoMax);
+            if (mqttChanged) {
+                homeAssistant.configure(
+                    systemSettings.mqttServer, systemSettings.mqttPort,
+                    systemSettings.mqttUser,   systemSettings.mqttPassword,
+                    systemSettings.mqttBaseTopic
+                );
+                homeAssistant.forceReconnect(); // NetworkManager will reconnect on next cycle
+                logBuffer.log("MQTT config updated, reconnecting...");
+            }
+
+            // Persist to LittleFS
+            bool saved = systemSettings.save();
+            logBuffer.log(saved ? "Settings saved to LittleFS" : "Settings applied (save failed)");
+
+            request->send(200, "application/json", saved
+                ? "{\"success\":true}"
+                : "{\"success\":true,\"warning\":\"Could not persist to flash\"}");
         }
     );
 
-    // POST /api/manual/actuators — control relays and servo while in manual mode
+    // ── Manual override API ────────────────────────────────────────────────
+
+    // (Registered before /api/manual on purpose — see the route-order note above.)
+    // POST /api/manual/actuators — drive relays and servo while in manual mode
     // {"boiler_pump": true, "heating_pump": false, "fans": true, "other": false, "servo": 75}
-    // Any missing key is ignored (partial updates allowed)
+    // Any missing key is left unchanged (partial updates allowed).
     webServer.on("/api/manual/actuators", HTTP_POST,
         [](AsyncWebServerRequest *request) {},
         nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            char* body = collectBody(request, data, len, index, total, 256);
+            if (!body) return;
+
             if (!manualMode) {
-                request->send(400, "application/json",
+                request->send(409, "application/json",
                     "{\"success\":false,\"error\":\"Not in manual mode\"}");
                 return;
             }
 
             StaticJsonDocument<128> doc;
-            if (deserializeJson(doc, data, len)) {
+            if (deserializeJson(doc, body)) {
                 request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
                 return;
             }
 
             // Manual commands bypass debounce for immediate response
-            if (doc.containsKey("boiler_pump"))  boilerPumpRelay.forceState(doc["boiler_pump"].as<bool>());
-            if (doc.containsKey("heating_pump")) heatingPumpRelay.forceState(doc["heating_pump"].as<bool>());
-            if (doc.containsKey("fans"))         fansRelay.forceState(doc["fans"].as<bool>());
-            if (doc.containsKey("other"))        otherRelay.forceState(doc["other"].as<bool>());
-            if (doc.containsKey("servo")) {
-                int pos = doc["servo"].as<int>();
-                pos = constrain(pos, 0, 100);
-                airIntake.setPosition(pos);
-            }
+            auto apply = [&](const char* key, Relay& relay, const char* label) {
+                if (!doc.containsKey(key)) return;
+                bool st = doc[key].as<bool>();
+                if (relay.getState() == st) return;
+                relay.forceState(st);
+                logBuffer.log(String("Manual: ") + label + (st ? " ON" : " OFF"));
+            };
+            apply("boiler_pump",  boilerPumpRelay,  "bomba caldera");
+            apply("heating_pump", heatingPumpRelay, "bomba calefacción");
+            apply("fans",         fansRelay,        "ventiladores");
+            apply("other",        otherRelay,       "relé auxiliar");
 
-            // Reset the timeout on each actuator command (user is still active)
-            manualModeStart = millis();
+            if (doc.containsKey("servo")) {
+                int pos = constrain(doc["servo"].as<int>(), 0, 100);
+                airIntake.setPosition(pos);
+                logBuffer.log("Manual: servo " + String(pos) + "%");
+            }
 
             request->send(200, "application/json", "{\"success\":true}");
         }
     );
+
+    // GET /api/manual — {"active": bool}
+    webServer.on("/api/manual", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json",
+            String("{\"active\":") + (manualMode ? "true" : "false") + "}");
+    });
+
+    // POST /api/manual {"active": true|false}
+    // Manual mode has no timeout: it stays until switched off. Leaving it hands
+    // control back to the automatic logic immediately (debounce cleared, PID resumes
+    // from the current servo position).
+    webServer.on("/api/manual", HTTP_POST,
+        [](AsyncWebServerRequest *request) {},
+        nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            char* body = collectBody(request, data, len, index, total, 256);
+            if (!body) return;
+
+            StaticJsonDocument<128> doc;
+            if (deserializeJson(doc, body) || !doc.containsKey("active")) {
+                request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+                return;
+            }
+            bool activate = doc["active"].as<bool>();
+
+            if (activate && killSwitchActive) {
+                request->send(409, "application/json",
+                    "{\"success\":false,\"error\":\"Temperatura crítica: manual bloqueado\"}");
+                return;
+            }
+
+            if (activate && !manualMode) {
+                manualMode = true;
+                logBuffer.log("Manual mode ON");
+            } else if (!activate && manualMode) {
+                manualMode = false;
+                boilerPumpRelay.resetDebounce();
+                heatingPumpRelay.resetDebounce();
+                fansRelay.resetDebounce();
+                otherRelay.resetDebounce();
+                airIntake.resumeFromCurrent();
+                lastSensorRead = 0;   // re-evaluate automatic logic on the next loop pass
+                logBuffer.log("Manual mode OFF — automatic control restored");
+            }
+
+            request->send(200, "application/json",
+                String("{\"success\":true,\"active\":") + (manualMode ? "true" : "false") + "}");
+        }
+    );
+
+    // ── Relay channel assignment ───────────────────────────────────────────
+
+    // GET /api/relays/map — channels, roles and the current role → channel assignment
+    webServer.on("/api/relays/map", HTTP_GET, [](AsyncWebServerRequest *request) {
+        AsyncResponseStream *response = request->beginResponseStream("application/json");
+        StaticJsonDocument<768> doc;
+        JsonArray chs = doc.createNestedArray("channels");
+        for (int c = 0; c < RELAY_CHANNEL_COUNT; c++) {
+            JsonObject o = chs.createNestedObject();
+            o["id"]  = c;
+            o["pin"] = RELAY_CHANNEL_PINS[c];
+        }
+        JsonArray roles = doc.createNestedArray("roles");
+        for (int r = 0; r < RELAY_ROLE_COUNT; r++) {
+            JsonObject o = roles.createNestedObject();
+            o["id"]      = RelayConfig::roleId(r);
+            o["label"]   = RelayConfig::roleLabel(r);
+            o["channel"] = relayConfig.channelFor(r);
+            o["state"]   = relayByRole[r]->getState();
+        }
+        serializeJson(doc, *response);
+        request->send(response);
+    });
+
+    // POST /api/relays/map {"role": "boiler_pump", "channel": 2}
+    // If another role already uses that channel the two swap, so the mapping stays valid.
+    webServer.on("/api/relays/map", HTTP_POST,
+        [](AsyncWebServerRequest *request) {},
+        nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            char* body = collectBody(request, data, len, index, total, 256);
+            if (!body) return;
+            StaticJsonDocument<128> doc;
+            if (deserializeJson(doc, body) || !doc.containsKey("role") || !doc.containsKey("channel")) {
+                request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+                return;
+            }
+            int role = RelayConfig::roleFromId(doc["role"] | "");
+            int ch   = doc["channel"] | -1;
+            if (role < 0 || ch < 0 || ch >= RELAY_CHANNEL_COUNT) {
+                request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown role or channel\"}");
+                return;
+            }
+            if (relayConfig.channelFor(role) != ch) {
+                int swapped = relayConfig.roleOn(ch);
+                bool saved = relayConfig.assign(role, ch);
+                applyRelayMapping(true);
+                logBuffer.log(String("Relay map: ") + RelayConfig::roleLabel(role) + " -> canal " + String(ch + 1) +
+                              " (GPIO " + String(RELAY_CHANNEL_PINS[ch]) + ")" +
+                              (swapped >= 0 ? String(", intercambiado con ") + RelayConfig::roleLabel(swapped) : String("")) +
+                              (saved ? "" : " [no se pudo guardar]"));
+            }
+            request->send(200, "application/json", "{\"success\":true}");
+        }
+    );
+
+    // ── Self-test (UI-launched) ────────────────────────────────────────────
+
+    // POST /api/selftest — start it (manual mode only; runs inside loop())
+    webServer.on("/api/selftest", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (!manualMode) {
+            request->send(409, "application/json", "{\"success\":false,\"error\":\"Activa el modo manual primero\"}");
+            return;
+        }
+        if (killSwitchActive) {
+            request->send(409, "application/json", "{\"success\":false,\"error\":\"Temperatura crítica\"}");
+            return;
+        }
+        if (selfTest.running || selfTestRequested) {
+            request->send(409, "application/json", "{\"success\":false,\"error\":\"Ya en marcha\"}");
+            return;
+        }
+        selfTest.done = false;
+        selfTestRequested = true;
+        request->send(200, "application/json", "{\"success\":true}");
+    });
+
+    // GET /api/selftest — progress / result
+    webServer.on("/api/selftest", HTTP_GET, [](AsyncWebServerRequest *request) {
+        AsyncResponseStream *response = request->beginResponseStream("application/json");
+        StaticJsonDocument<384> doc;
+        doc["running"] = selfTest.running || selfTestRequested;
+        doc["done"]    = selfTest.done;
+        doc["step"]    = selfTest.step;
+        if (selfTest.error) doc["error"] = selfTest.errorMsg;
+        doc["display_ok"]    = selfTest.displayOk;
+        doc["relays_pulsed"] = selfTest.relaysPulsed;
+        doc["tc_ok"]         = selfTest.tcOk;
+        if (selfTest.tcOk) doc["tc_temp"] = selfTest.tcTemp; else doc["tc_temp"] = nullptr;
+        doc["dallas_count"]  = selfTest.dallasCount;
+        doc["dallas_valid"]  = selfTest.dallasValid;
+        serializeJson(doc, *response);
+        request->send(response);
+    });
+
+    // GET /api/history — temperature history (see history.h for the format)
+    webServer.on("/api/history", HTTP_GET, [](AsyncWebServerRequest *request) {
+        AsyncResponseStream *response = request->beginResponseStream("application/json");
+        history.writeJson(*response);
+        request->send(response);
+    });
 
     // GET /api/mqtt/status — connection state, fail count, next retry countdown
     webServer.on("/api/mqtt/status", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1187,10 +1496,7 @@ void setup() {
 
     // POST /api/display/test — draw a quick test frame so the user can verify visibility
     webServer.on("/api/display/test", HTTP_POST, [](AsyncWebServerRequest *request) {
-        char sdaLine[16], sclLine[16];
-        snprintf(sdaLine, sizeof(sdaLine), "SDA: %d", OLED_SDA);
-        snprintf(sclLine, sizeof(sclLine), "SCL: %d", OLED_SCL);
-        display.showMessage("Display Test", sdaLine, sclLine);
+        displayTestRequested = true;   // drawn by loop(): the OLED is not touched from the web task
         request->send(200, "application/json",
             String("{\"success\":true,\"available\":") + (display.isAvailable() ? "true" : "false") + "}");
     });
@@ -1293,8 +1599,13 @@ void setup() {
     // Initial async temperature request before self-test reads
     sensors.requestTemperatures();
 
-    // Boot self-test: display, relays, thermocouple, Dallas sensors
-    runSelfTest();
+    // Why did the chip restart? Logged in plain words and exposed in /api/status.
+    {
+        esp_reset_reason_t rr = esp_reset_reason();
+        bootReason = String(resetReasonText(rr)) + " (código " + String((int)rr) + ")";
+        logBuffer.log("Último reinicio: " + bootReason);
+    }
+
 
     logBuffer.log("System ready!");
 }
@@ -1304,6 +1615,12 @@ void loop() {
 
     // Update network manager (handles WiFi connection, MQTT reconnection and OTA)
     networkManager.update();
+
+    // UI-requested self-test (blocking, a few seconds, manual mode only)
+    if (selfTestRequested) {
+        selfTestRequested = false;
+        runSelfTest();
+    }
 
     // Tick relay debounce timers — only in automatic mode; manual mode uses forceState() directly
     if (!manualMode) {
@@ -1317,13 +1634,34 @@ void loop() {
     if (currentMillis - lastSensorRead >= 1000) {
         lastSensorRead = currentMillis;
 
-        // Read all sensors
-        readSensors();
+        // Read all sensors (or rescan the bus if the UI asked for it)
+        if (dallasScanRequested) {
+            dallasScanRequested = false;
+            int n = sensors.scanSensors();
+            sensors.requestTemperatures();
+            logBuffer.log("Dallas bus rescanned: " + String(n) + " sensors found");
+        } else {
+            readSensors();
+        }
 
         // Check operation conditions
-        isBurning = sensors.isBurning();          // update global — PID block reads it
+        // Flue-gas thermocouple with hysteresis: on above T, off below T - hysteresis
+        if (isnan(burningTemp))                                                   isBurning = false;
+        else if (burningTemp > systemSettings.burningTempThreshold)               isBurning = true;
+        else if (burningTemp < systemSettings.burningTempThreshold - BURNING_HYSTERESIS) isBurning = false;
         bool isBoilerWaterHot = sensors.isBoilerWaterHot();
         bool isBoilerWaterCritical = sensors.isBoilerWaterCritical();
+
+        // Boiler-supply sensor watchdog (only if a sensor is actually assigned to that role)
+        bool supplyAssigned = sensorConfig.boilerSupplyAddr[0] != '\0';
+        if (supplyAssigned && isnan(boilerSupplyTemp)) waterFaultSecs++; else waterFaultSecs = 0;
+        bool fault = waterFaultSecs >= WATER_SENSOR_FAULT_SECS;
+        if (fault != waterSensorFault) {
+            waterSensorFault = fault;
+            logBuffer.log(fault ? "ALERT: boiler supply sensor has no reading — safe mode (pumps ON while hot, air closed)"
+                                : "Boiler supply sensor recovered — normal control restored");
+            if (!fault) airIntake.resumeFromCurrent();
+        }
 
         // Critical safety always overrides everything, including manual mode
         if (isBoilerWaterCritical) {
@@ -1332,29 +1670,47 @@ void loop() {
                 logBuffer.log("Manual mode cancelled — critical temperature override");
             }
             handleCriticalTemperature();
-        } else if (!manualMode) {
+        } else if (manualMode) {
+            // Critical condition cleared while the user is in manual mode
+            if (killSwitchActive) {
+                killSwitchActive = false;
+                logBuffer.log("Water temperature normalized — manual mode still active");
+            }
+        } else if (waterSensorFault) {
+            handleSensorFault(isBurning);
+        } else {
             handleNormalOperation(isBurning, isBoilerWaterHot);
         }
     }
 
-    // Manual mode timeout — revert to automatic
-    if (manualMode && (currentMillis - manualModeStart >= manualModeTimeout)) {
-        manualMode = false;
-        logBuffer.log("Manual mode timeout — returning to automatic");
+    // History sample once per minute
+    if (currentMillis - lastHistoryRecord >= HISTORY_FINE_INTERVAL_MS) {
+        lastHistoryRecord = currentMillis;
+        recordHistory();
     }
 
     // PID + servo update — only in automatic mode
-    if (currentMillis - lastControlUpdate >= PID_SAMPLE_TIME && !killSwitchActive && !manualMode) {
+    if (currentMillis - lastControlUpdate >= PID_SAMPLE_TIME && !killSwitchActive && !manualMode && !waterSensorFault) {
         lastControlUpdate = currentMillis;
         static bool prevBurning = false;
         if (isBurning) {
             if (!prevBurning) {
-                // Combustion just started — reset integral so windup from the cold period
-                // doesn't slam the servo to 100% on the first tick.
-                airIntake.resetIntegral();
+                // Combustion just started — restart the PID from the current damper
+                // position so windup from the cold period doesn't slam the servo.
+                airIntake.resumeFromCurrent();
                 logBuffer.log("Combustion detected — air intake PID resumed");
             }
-            airIntake.update(burningTemp);
+            float pv = pidProcessValue();
+            static bool pvWasBad = false;
+            if (isnan(pv)) {
+                // Regulated sensor missing: close the damper rather than steer blind
+                if (!pvWasBad) logBuffer.log("PID source sensor invalid — air intake closed");
+                airIntake.setPosition(0);
+            } else {
+                if (pvWasBad) { airIntake.resumeFromCurrent(); logBuffer.log("PID source sensor recovered"); }
+                airIntake.update(pv);
+            }
+            pvWasBad = isnan(pv);
         } else {
             if (prevBurning) {
                 logBuffer.log("Combustion lost — air intake closed");
@@ -1364,8 +1720,27 @@ void loop() {
         prevBurning = isBurning;
     }
 
-    // Update display every 500ms
-    if (currentMillis - lastDisplayUpdate >= 500) {
+    if (displayTestRequested) {
+        displayTestRequested = false;
+        char sdaLine[16], sclLine[16];
+        snprintf(sdaLine, sizeof(sdaLine), "SDA: %d", OLED_SDA);
+        snprintf(sclLine, sizeof(sclLine), "SCL: %d", OLED_SCL);
+        display.showMessage("Display Test", sdaLine, sclLine);
+        displayHoldUntil = currentMillis + 4000;
+    }
+
+    // Persist the gains when an auto-tune finishes
+    {
+        double kp, ki, kd;
+        if (airIntake.takeTuneResult(kp, ki, kd)) {
+            systemSettings.pidKp = kp; systemSettings.pidKi = ki; systemSettings.pidKd = kd;
+            systemSettings.save();
+            logBuffer.log("PID auto-tune finished: Kp=" + String(kp, 3) + " Ki=" + String(ki, 4) + " Kd=" + String(kd, 3) + " (saved)");
+        }
+    }
+
+    // Update display every 500ms (not while a test frame is being shown)
+    if (currentMillis - lastDisplayUpdate >= 500 && currentMillis >= displayHoldUntil) {
         lastDisplayUpdate = currentMillis;
 
         // Update display with current values

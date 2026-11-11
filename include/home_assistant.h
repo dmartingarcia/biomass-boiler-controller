@@ -108,7 +108,7 @@ public:
         doc["fans"]                = fans        ? "ON" : "OFF";
         doc["other_relay"]         = otherRelay  ? "ON" : "OFF";
         doc["target_burning_temp"] = targetBurningTemp;
-        doc["air_intake"]          = map(airIntakePosition, 0, 180, 0, 100);
+        doc["air_intake"]          = airIntakePosition;  // already 0-100 %
 
         char buffer[768];
         serializeJson(doc, buffer);

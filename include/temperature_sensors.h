@@ -75,6 +75,7 @@ public:
         dallas.begin();
         sensorCount = dallas.getDeviceCount();
         if (sensorCount > MAX_DALLAS_SENSORS) sensorCount = MAX_DALLAS_SENSORS;
+        for (int i = 0; i < MAX_DALLAS_SENSORS; i++) cache[i] = DEVICE_DISCONNECTED_C;
         for (int i = 0; i < sensorCount; i++) {
             dallas.getAddress(addresses[i], i);
             dallas.setResolution(addresses[i], 12);
@@ -85,6 +86,13 @@ public:
     // Call this once per cycle; reads complete after ~750 ms (12-bit)
     void requestTemperatures() {
         dallas.requestTemperatures();
+    }
+
+    // Read every sensor's scratchpad ONCE and keep the values. Only the main loop may call
+    // this (it is the only code that touches the 1-Wire bus); everything else — role getters,
+    // the web handlers — reads the cache, so concurrent web requests can't corrupt a read.
+    void refreshCache() {
+        for (int i = 0; i < sensorCount; i++) cache[i] = dallas.getTempC(addresses[i]);
     }
 
     // Role-based accessors (return DEVICE_DISCONNECTED_C = -127.0 if unassigned)
@@ -130,7 +138,7 @@ public:
     // Debug: temperature of sensor at bus index i
     float getTempByIndex(int i) {
         if (i < 0 || i >= sensorCount) return DEVICE_DISCONNECTED_C;
-        return dallas.getTempC(addresses[i]);
+        return cache[i];
     }
 
     // Debug: hex address string of sensor at bus index i
@@ -153,7 +161,9 @@ private:
         if (!addr || strlen(addr) == 0) return DEVICE_DISCONNECTED_C;
         DeviceAddress da;
         if (!strToAddr(addr, da)) return DEVICE_DISCONNECTED_C;
-        return dallas.getTempC(da);
+        for (int i = 0; i < sensorCount; i++)
+            if (memcmp(addresses[i], da, 8) == 0) return cache[i];
+        return DEVICE_DISCONNECTED_C;   // assigned sensor not on the bus
     }
 
     float burningThreshold     = BURNING_TEMP_THRESHOLD;
@@ -167,6 +177,8 @@ private:
 
     int sensorCount;
     DeviceAddress addresses[MAX_DALLAS_SENSORS];
+    float cache[MAX_DALLAS_SENSORS] = { DEVICE_DISCONNECTED_C, DEVICE_DISCONNECTED_C, DEVICE_DISCONNECTED_C, DEVICE_DISCONNECTED_C, DEVICE_DISCONNECTED_C,
+                                        DEVICE_DISCONNECTED_C, DEVICE_DISCONNECTED_C, DEVICE_DISCONNECTED_C, DEVICE_DISCONNECTED_C, DEVICE_DISCONNECTED_C };
 };
 
 #endif // TEMPERATURE_SENSORS_H

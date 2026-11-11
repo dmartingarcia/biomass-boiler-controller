@@ -17,12 +17,12 @@ struct RuntimeSettings {
     float    boilerWaterTempThreshold;
     float    boilerWaterCriticalTemp;
     float    targetBurningTemp;
+    int      pidSource;
     float    pidKp;
     float    pidKi;
     float    pidKd;
     int      servoMin;
     int      servoMax;
-    int      manualModeTimeoutMin;
     int      relayDebounceMin;
     float    boilerIronThreshold;
     float    floorDeltaThreshold;
@@ -37,12 +37,12 @@ struct RuntimeSettings {
         boilerWaterTempThreshold = BOILER_WATER_TEMP_THRESHOLD;
         boilerWaterCriticalTemp  = BOILER_WATER_CRITICAL_TEMP;
         targetBurningTemp        = DEFAULT_TARGET_BURNING_TEMP;
+        pidSource                = DEFAULT_PID_SOURCE;
         pidKp                    = PID_KP;
         pidKi                    = PID_KI;
         pidKd                    = PID_KD;
         servoMin                 = DEFAULT_SERVO_MIN;
         servoMax                 = DEFAULT_SERVO_MAX;
-        manualModeTimeoutMin     = MANUAL_MODE_DEFAULT_TIMEOUT_MIN;
         relayDebounceMin         = RELAY_DEBOUNCE_MIN;
         boilerIronThreshold      = BOILER_IRON_PUMP_THRESHOLD;
         floorDeltaThreshold      = FLOOR_DELTA_THRESHOLD;
@@ -61,12 +61,12 @@ struct RuntimeSettings {
                 boilerWaterTempThreshold = prefs.getFloat("water_thresh", boilerWaterTempThreshold);
                 boilerWaterCriticalTemp  = prefs.getFloat("water_crit",   boilerWaterCriticalTemp);
                 targetBurningTemp        = prefs.getFloat("target_burn",  targetBurningTemp);
+                pidSource                = prefs.getInt("pid_src",         pidSource);
                 pidKp                    = prefs.getFloat("pid_kp",       pidKp);
                 pidKi                    = prefs.getFloat("pid_ki",       pidKi);
                 pidKd                    = prefs.getFloat("pid_kd",       pidKd);
                 servoMin                 = prefs.getInt("servo_min",       servoMin);
                 servoMax                 = prefs.getInt("servo_max",       servoMax);
-                manualModeTimeoutMin     = prefs.getInt("manual_tmo",      manualModeTimeoutMin);
                 relayDebounceMin         = prefs.getInt("debounce_min",    relayDebounceMin);
                 boilerIronThreshold      = prefs.getFloat("iron_thresh",  boilerIronThreshold);
                 floorDeltaThreshold      = prefs.getFloat("floor_delta",  floorDeltaThreshold);
@@ -100,12 +100,12 @@ struct RuntimeSettings {
         prefs.putFloat("water_thresh", boilerWaterTempThreshold);
         prefs.putFloat("water_crit",   boilerWaterCriticalTemp);
         prefs.putFloat("target_burn",  targetBurningTemp);
+        prefs.putInt("pid_src",         pidSource);
         prefs.putFloat("pid_kp",       pidKp);
         prefs.putFloat("pid_ki",       pidKi);
         prefs.putFloat("pid_kd",       pidKd);
         prefs.putInt("servo_min",       servoMin);
         prefs.putInt("servo_max",       servoMax);
-        prefs.putInt("manual_tmo",      manualModeTimeoutMin);
         prefs.putInt("debounce_min",    relayDebounceMin);
         prefs.putFloat("iron_thresh",  boilerIronThreshold);
         prefs.putFloat("floor_delta",  floorDeltaThreshold);
@@ -116,6 +116,38 @@ struct RuntimeSettings {
         prefs.putString("mqtt_topic",  mqttBaseTopic);
         prefs.end();
         return true;
+    }
+
+    // Returns nullptr when the values are coherent, otherwise a message for the user
+    const char* validate() const {
+        auto bad = [](float v) { return isnan(v) || isinf(v); };
+        if (bad(burningTempThreshold) || bad(boilerWaterTempThreshold) || bad(boilerWaterCriticalTemp) ||
+            bad(targetBurningTemp) || bad(pidKp) || bad(pidKi) || bad(pidKd) ||
+            bad(boilerIronThreshold) || bad(floorDeltaThreshold))
+            return "Algún valor no es un número";
+        if (boilerWaterCriticalTemp <= boilerWaterTempThreshold)
+            return "«Agua crítica» debe ser mayor que «Agua caliente»";
+        if (boilerWaterCriticalTemp >= DALLAS_MAX_VALID_TEMP)
+            return "«Agua crítica» debe ser menor que el máximo válido del sensor (120 °C)";
+        if (burningTempThreshold < 0 || burningTempThreshold > 1000)
+            return "Detección de combustión fuera de rango (0–1000 °C)";
+        if (targetBurningTemp < TARGET_TEMP_MIN || targetBurningTemp > TARGET_TEMP_MAX)
+            return "Objetivo del PID fuera de rango";
+        if (pidSource < 0 || pidSource > 8)
+            return "Temperatura del PID no válida";
+        if (pidKp < 0 || pidKi < 0 || pidKd < 0 || pidKp > 1000 || pidKi > 1000 || pidKd > 1000)
+            return "Kp, Ki y Kd deben estar entre 0 y 1000";
+        if (servoMin < 0 || servoMax > 180 || servoMin >= servoMax)
+            return "Rango de servo no válido (0–180, mínimo < máximo)";
+        if (relayDebounceMin < 0 || relayDebounceMin > 60)
+            return "Debounce fuera de rango (0–60 min)";
+        if (boilerIronThreshold < 0 || boilerIronThreshold > 120)
+            return "Umbral de hierro fuera de rango (0–120 °C)";
+        if (floorDeltaThreshold < 0 || floorDeltaThreshold > 50)
+            return "Delta de suelo fuera de rango (0–50 °C)";
+        if (mqttPort == 0)
+            return "Puerto MQTT no válido";
+        return nullptr;
     }
 
     // Wipe the NVS namespace and restore compile-time defaults
@@ -144,7 +176,6 @@ private:
         pidKd                    = doc["pid_kd"]                 | pidKd;
         servoMin                 = doc["servo_min"]              | servoMin;
         servoMax                 = doc["servo_max"]              | servoMax;
-        manualModeTimeoutMin     = doc["manual_timeout_min"]     | manualModeTimeoutMin;
         relayDebounceMin         = doc["relay_debounce_min"]     | relayDebounceMin;
         boilerIronThreshold      = doc["boiler_iron_threshold"]  | boilerIronThreshold;
         floorDeltaThreshold      = doc["floor_delta_threshold"]  | floorDeltaThreshold;

@@ -27,6 +27,10 @@ public:
         initialized = true;
     }
 
+    // Forget the last change time so the next setState() applies immediately
+    // (used when leaving manual mode)
+    void resetDebounce() { initialized = false; }
+
     // Call every loop iteration. Returns true if the physical state changed.
     bool tick() {
         if (desiredState == state) return false;
@@ -37,6 +41,13 @@ public:
         }
         return false;
     }
+
+    // Re-assign the output pin. setPin() before begin(); rebind()+reapply() at runtime
+    // (caller must drive every old pin LOW first so two relays never share a pin).
+    void setPin(uint8_t p) { pin = p; }
+    void rebind(uint8_t p) { pin = p; pinMode(pin, OUTPUT); }
+    void reapply()         { digitalWrite(pin, state ? HIGH : LOW); }
+    uint8_t getPin() const { return pin; }
 
     bool getState()        const { return state; }
     bool getDesiredState() const { return desiredState; }

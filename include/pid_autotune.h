@@ -102,6 +102,7 @@ public:
                     _peakCount++;
                     _peak2 = _peak1;
                     _peak1 = refVal;
+                    if (_peakCount <= 4) _peaks[_peakCount - 1] = now;   // time of THIS peak
                 }
                 _peakType = 1;
             }
@@ -110,15 +111,21 @@ public:
                     _peakCount++;
                     _peak2 = _peak1;
                     _peak1 = refVal;
+                    if (_peakCount <= 4) _peaks[_peakCount - 1] = now;   // time of THIS peak
                 }
                 _peakType = -1;
             }
 
             // If we have enough peaks, calculate PID parameters
             if (_peakCount >= 4) {
-                // Calculate Ku and Tu values
-                double Ku = 4.0 * _outputStep / ((0.5 * (_peak1 - _peak2)) * 3.14159);
-                double Tu = (double)(now - _peaks[0]) / 1000.0;
+                // Relay method: the output swings between 0 and _outputStep, so the relay
+                // amplitude is step/2; the process oscillates with amplitude |peak1-peak2|/2.
+                // Four consecutive extremes span 1.5 oscillation periods.
+                double amp = fabs(_peak1 - _peak2) * 0.5;
+                if (amp < 0.05) amp = 0.05;                       // avoid a divide-by-~zero
+                double Ku = 4.0 * (_outputStep * 0.5) / (3.14159 * amp);
+                double Tu = (double)(_peaks[3] - _peaks[0]) / 1000.0 / 1.5;
+                if (Tu < 1.0) Tu = 1.0;
 
                 // Calculate PID parameters using Ziegler-Nichols
                 if (_controlType == PID_TYPE) {
@@ -137,6 +144,11 @@ public:
                     _kd = 0;
                 }
 
+                // Sanity limits so a noisy run can't hand the servo absurd gains
+                if (_kp > 50.0) _kp = 50.0;
+                if (_ki > 5.0)  _ki = 5.0;
+                if (_kd > 50.0) _kd = 50.0;
+
                 _running = false;
                 return true;  // Auto-tuning complete
             }
@@ -147,11 +159,6 @@ public:
                 }
                 else if (refVal < _setpoint - _noiseband && *_output < _outputStep) {
                     *_output = _outputStep;
-                }
-
-                // Record peak times
-                if (_peakCount > 0 && _peakCount < 4) {
-                    _peaks[_peakCount - 1] = now;
                 }
             }
         }

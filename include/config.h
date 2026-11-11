@@ -33,10 +33,13 @@
 
 // Target burning temperature range (for UI slider)
 #define TARGET_TEMP_MIN                30.0
-#define TARGET_TEMP_MAX                150.0
+#define TARGET_TEMP_MAX                300.0
 
 // Temperature thresholds (Celsius)
 #define BURNING_TEMP_THRESHOLD         100.0
+// Combustion is "on" above BURNING_TEMP_THRESHOLD and only turns "off" again once the
+// flue gas falls below (threshold - BURNING_HYSTERESIS), to avoid on/off chatter
+#define BURNING_HYSTERESIS             5.0
 #define BOILER_WATER_TEMP_THRESHOLD    40.0
 #define BOILER_WATER_CRITICAL_TEMP     90.0
 
@@ -53,6 +56,11 @@
 #define PID_LOOKBACK_SEC               30
 
 #define DEFAULT_TARGET_BURNING_TEMP    85.0
+
+// Temperature the air-intake PID regulates (index in history.h channel order):
+// 0 boiler_supply, 1 boiler_return, 2 boiler_iron, 3 floor_supply, 4 floor_return,
+// 5 mix_supply, 6 ambient_low, 7 ambient_high, 8 burning (flue-gas thermocouple)
+#define DEFAULT_PID_SOURCE             8
 
 #define LOG_BUFFER_SIZE                100
 
@@ -72,13 +80,21 @@
 #define DEFAULT_STATIC_SUBNET          "255.255.255.0"
 #define DEFAULT_STATIC_DNS             "192.168.0.1"
 
-// Manual override mode
-#define MANUAL_MODE_DEFAULT_TIMEOUT_MIN  10
-#define MANUAL_MODE_MAX_TIMEOUT_MIN     120
+// Temperature history (RAM ring buffers, lost on reboot)
+// Fine tier: one sample per minute for the last hour.
+// Coarse tier: one sample per 5 minutes (average) for the last 24 hours.
+#define HISTORY_FINE_COUNT             60
+#define HISTORY_COARSE_COUNT           288
+#define HISTORY_FINE_INTERVAL_MS       60000UL
+#define HISTORY_COARSE_EVERY           5       // fine samples per coarse sample
 
 // Sensor validity — Dallas readings at or below this value are considered errors
 #define DALLAS_MIN_VALID_TEMP          -20.0
 #define DALLAS_MAX_VALID_TEMP          120.0
+
+// Boiler-supply sensor fault: this many consecutive seconds without a valid reading
+// (while the sensor is assigned) puts the system in safe mode
+#define WATER_SENSOR_FAULT_SECS        10
 
 // Pump / relay debounce — minimum state hold time (minutes)
 #define RELAY_DEBOUNCE_MIN             5
@@ -90,9 +106,6 @@
 // Heating pump activates only when (ida_caldera − retorno_suelo) exceeds this (°C)
 // — ensures there is useful heat to transfer to the floor circuit
 #define FLOOR_DELTA_THRESHOLD          5.0
-
-// Runtime settings file in LittleFS (overrides compile-time defaults)
-#define SETTINGS_FILE                  "/settings.json"
 
 // MQTT
 #define MQTT_SERVER                    "homeassistant.local"

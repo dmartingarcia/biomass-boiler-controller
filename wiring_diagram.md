@@ -36,11 +36,11 @@ Plataforma: **Lolin S2 Mini** (ESP32-S2)
 |----------|--------------|
 | VCC      | 3.3V         |
 | GND      | GND          |
-| SDA      | GPIO 35      |
-| SCL      | GPIO 33      |
+| SDA      | GPIO 33      |
+| SCL      | GPIO 35      |
 
-> Si usas pantalla SH1106 en lugar de SSD1306, cambia el tipo en `display.h`:  
-> `U8G2_SH1106_128X64_NONAME_F_SW_I2C`
+> El tipo de controlador se elige en `config.h`: con `#define OLED_TYPE_SH1106` (activo por defecto)
+> se usa SH1106; coméntalo para SSD1306.
 
 ## Relés (salidas)
 
