@@ -451,6 +451,7 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
 
     <div class="card">
         <h2>Sistema</h2>
+        <div class="row"><span>Versión del firmware</span><span id="sys-fw" style="text-align:right;font-size:13px">--</span></div>
         <div class="row"><span>Tiempo encendido</span><span id="sys-uptime">--</span></div>
         <div class="row"><span>Memoria libre</span><span id="sys-heap" style="font-size:13px">--</span></div>
         <div class="row"><span>Historial de reinicios</span><span id="sys-boots" style="text-align:right;font-size:12px;max-width:65%">--</span></div>
@@ -554,6 +555,7 @@ function applyStatus(d) {
     $('autotune-status').textContent = d.auto_tuning ? '⚙ en proceso' : '';
     const sl = $('cfg-target-temp');
     if (document.activeElement !== sl) { sl.value = d.target_burning_temp; $('cfg-target-val').textContent = Math.round(d.target_burning_temp); }
+    if (d.firmware) $('sys-fw').textContent = d.firmware + (d.build ? ' · compilado ' + d.build : '');
     if (d.uptime_s != null) $('sys-uptime').textContent = fmtDur(d.uptime_s);
     if (d.reset_reason) $('sys-reset').textContent = d.reset_reason;
     if (d.boot_history != null) $('sys-boots').textContent = 'arranque #' + d.boot_count + ' · ' + (d.boot_history || '—');
@@ -1199,7 +1201,7 @@ function reportText(d, rep, when) {
     if (d.system) {
         const s = d.system;
         L.push('', 'Sistema:', '  WiFi: ' + (s.wifi ? 'conectado, ' + s.rssi + ' dBm' : 'desconectado'), '  MQTT: ' + (s.mqtt ? 'conectado' : 'desconectado'),
-            '  Memoria libre: ' + s.heap_free + ' B', '  Tiempo encendido: ' + fmtDur(s.uptime_s), '  Duración del test: ' + (s.duration_ms / 1000).toFixed(1) + ' s', '  Firmware compilado: ' + s.build);
+            '  Memoria libre: ' + s.heap_free + ' B', '  Tiempo encendido: ' + fmtDur(s.uptime_s), '  Duración del test: ' + (s.duration_ms / 1000).toFixed(1) + ' s', '  Firmware: ' + (s.firmware || '?') + ' (compilado ' + s.build + ')');
     }
     return L.join('\n');
 }
@@ -1226,7 +1228,7 @@ function renderSelfTest(d) {
         ${sec('Sistema')}
         ${row('WiFi', s.wifi ? tag('ok', 'conectado · ' + s.rssi + ' dBm') : tag('warn', 'desconectado'))}
         ${row('MQTT', s.mqtt ? tag('ok', 'conectado') : tag('warn', 'desconectado'))}
-        ${row('Memoria libre', s.heap_free + ' B')}${row('Tiempo encendido', fmtDur(s.uptime_s))}${row('Duración del test', (s.duration_ms / 1000).toFixed(1) + ' s')}${row('Firmware', s.build)}
+        ${row('Memoria libre', s.heap_free + ' B')}${row('Tiempo encendido', fmtDur(s.uptime_s))}${row('Duración del test', (s.duration_ms / 1000).toFixed(1) + ' s')}${row('Firmware', (s.firmware || '?') + ' <small style="color:var(--muted)">compilado ' + s.build + '</small>')}
         <div class="actions" style="margin:12px 0 0"><button type="button" class="btn sm grey" onclick="copyReport()">Copiar informe</button><button type="button" class="btn sm grey" onclick="downloadReport()">Descargar .txt</button></div>`;
 }
 function copyReport() { (navigator.clipboard ? navigator.clipboard.writeText(lastReport) : Promise.reject()).then(() => toast('Informe copiado'), () => toast('No se pudo copiar', true)); }

@@ -22,6 +22,11 @@
 #include "rules_io.h"
 #include "sensor_hold.h"
 
+// Firmware version: git commit, injected by scripts/git_version.py at build time
+#ifndef GIT_VERSION
+#define GIT_VERSION "unknown"
+#endif
+
 // Creación del servidor web directamente en main.cpp
 AsyncWebServer webServer(WEB_SERVER_PORT);
 
@@ -734,7 +739,7 @@ void setup() {
         // Create JSON response with current system state
         AsyncResponseStream *response = request->beginResponseStream("application/json");
 
-        StaticJsonDocument<1024> doc;
+        StaticJsonDocument<1280> doc;
         auto setTemp = [&](const char* key, float v) {
             if (TemperatureSensors::isValidDallasTemp(v)) doc[key] = v; else doc[key] = nullptr;
         };
@@ -761,6 +766,8 @@ void setup() {
         doc["killswitch_active"] = killSwitchActive;
         doc["manual_mode"] = manualMode;
         doc["uptime_s"] = millis() / 1000UL;
+        doc["firmware"] = GIT_VERSION;
+        doc["build"]    = __DATE__ " " __TIME__;
         doc["pid_source"] = systemSettings.pidSource;
         doc["water_sensor_fault"] = waterSensorFault;
         doc["reset_reason"] = bootReason;
@@ -1710,6 +1717,7 @@ void setup() {
             sys["uptime_s"]   = selfTest.uptimeSec;
             sys["duration_ms"] = selfTest.durationMs;
             sys["build"]      = __DATE__ " " __TIME__;
+            sys["firmware"]   = GIT_VERSION;
         }
         serializeJson(doc, *response);
         request->send(response);
