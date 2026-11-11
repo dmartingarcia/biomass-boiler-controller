@@ -306,7 +306,7 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
             <aside class="detail" id="detail"></aside>
         </div>
         <p style="font-size:12px;color:var(--muted);margin-top:8px">
-            Detalle: 1 muestra cada 5 s los últimos 30 min, cada 30 s hasta 3 h y cada 5 min hasta 24 h (los tramos antiguos son medias). Las horas son las de tu navegador.
+            Detalle: 1 muestra por segundo los últimos 5 min, cada 10 s hasta 1 h, cada minuto hasta 6 h y cada 5 min hasta 24 h (los tramos antiguos son medias). Las horas son las de tu navegador.
             Los datos viven en la RAM del ESP32: se pierden al reiniciar. Franjas inferiores: relés activos y modo manual.
         </p>
     </div>
@@ -633,7 +633,9 @@ const STRIPS = [
     { bit: 0x10, label: 'Manual',     color: '#e8590c' },
 ];
 const RANGES = [ { s: 3600, l: '1 h' }, { s: 10800, l: '3 h' }, { s: 21600, l: '6 h' }, { s: 43200, l: '12 h' }, { s: 86400, l: '24 h' } ];
-let HIST = null;                       // { pts: {id: [{age, v}]}, flags: [{age, f}] }
+let HIST = null;
+// Charts are only worth refreshing while a page that shows one is open
+const chartIdle = () => !(document.getElementById('page-charts').classList.contains('active') || document.getElementById('page-dashboard').classList.contains('active'));                       // { pts: {id: [{age, v}]}, flags: [{age, f}] }
 let visible = {}; SERIES.forEach(s => visible[s.id] = true);
 let rangeSec = 21600;
 try { const v = JSON.parse(localStorage.getItem('chartVisible') || 'null'); if (v) Object.assign(visible, v);
@@ -644,7 +646,7 @@ function css(name) { return getComputedStyle(document.documentElement).getProper
 // Merge the history tiers (coarse → fine → ultra) into one age-ordered (oldest → newest)
 // point list per series. Each tier only contributes the part that is OLDER than the oldest
 // sample of the next finer tier, so the finest data available wins everywhere.
-const TIERS = ['coarse', 'fine', 'ultra'];
+const TIERS = ['coarse', 'mid', 'fine', 'ultra'];   // oldest/coarsest first
 function buildHist(parts) {
     const tiers = TIERS.map(k => parts[k] && parts[k][k]).filter(t => t && t.n);
     const ageOf = (t, i) => t.age + (t.n - 1 - i) * t.step;
@@ -664,16 +666,18 @@ function buildHist(parts) {
     return { pts, flags, t0: Date.now() };   // t0: ages are relative to this instant
 }
 
+// The ESP renders one tier per request, so they are fetched one after another. The tiers
+// are cached: the 1 s tier is refreshed often, the coarser ones only once in a while.
+const histParts = {};
 let historyLoading = false;
-async function loadHistory() {
+async function loadHistory(which) {
     if (historyLoading) return;
     historyLoading = true;
     try {
-        const parts = {};
-        for (const k of TIERS) {
-            try { const d = await (await fetch('/api/history?tier=' + k)).json(); if (!d.error) parts[k] = d; } catch (e) {}
+        for (const k of (which || TIERS)) {
+            try { const d = await (await fetch('/api/history?tier=' + k)).json(); if (!d.error) histParts[k] = d; } catch (e) {}
         }
-        if (Object.keys(parts).length) { HIST = buildHist(parts); redrawCharts(); }
+        if (Object.keys(histParts).length) { HIST = buildHist(histParts); redrawCharts(); }
     } finally { historyLoading = false; }
 }
 
@@ -687,7 +691,7 @@ function fmtAge(s) {
     return 'hace ' + (s / 3600).toFixed(1).replace('.0', '') + ' h';
 }
 
-const TICK_STEPS = [10, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];   // seconds
+const TICK_STEPS = [5, 10, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];   // seconds
 const pad2 = n => String(n).padStart(2, '0');
 function clock(ms, withDate, withSec) {
     const d = new Date(ms);
@@ -713,7 +717,7 @@ class Chart {
             const d = this.drag; if (!d) return; this.drag = null;
             if (Math.abs(d.x1 - d.x0) > 10 && this.geo) {
                 const t1 = this.geo.tsAt(Math.min(d.x0, d.x1)), t2 = this.geo.tsAt(Math.max(d.x0, d.x1));
-                if (t2 - t1 >= 60000) { this.setView(t1, t2); return; }     // at least 1 minute wide
+                if (t2 - t1 >= 20000) { this.setView(t1, t2); return; }     // at least 20 seconds wide
             }
             select(d.x0); this.draw();
         });
@@ -1170,6 +1174,7 @@ pollStatus(); setInterval(pollStatus, 2000);
 setInterval(() => { updateDallas(); updateLogs(); }, 2000);
 setInterval(updateMqttStatus, 5000);
 setInterval(() => { if (!document.hidden) loadHistory(); }, 60000);
+setInterval(() => { if (!document.hidden && HIST && !chartIdle()) loadHistory(['ultra']); }, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { pollStatus(); loadHistory(); } });
 loadDisplayStatus();
 let startPage = 'dashboard';

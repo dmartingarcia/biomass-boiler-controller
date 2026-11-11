@@ -82,19 +82,26 @@
 #define DEFAULT_STATIC_SUBNET          "255.255.255.0"
 #define DEFAULT_STATIC_DNS             "192.168.0.1"
 
-// Temperature history: three RAM ring buffers (lost on reboot), see history.h.
-//   ultra  : 1 sample / 5 s,  last 30 min  (360 samples)
-//   fine   : 1 sample / 30 s, last 3 h     (360 samples, average of 6 ultra)
-//   coarse : 1 sample / 5 min, last 24 h   (288 samples, average of 10 fine)
-// Each sample is 20 bytes, so all three together use ~20 KB of RAM.
-#define HISTORY_SAMPLE_INTERVAL_MS     5000UL
-#define HISTORY_ULTRA_COUNT            360
-#define HISTORY_FINE_COUNT             360
-#define HISTORY_COARSE_COUNT           288
-#define HISTORY_FINE_EVERY             6       // ultra samples per fine sample
-#define HISTORY_COARSE_EVERY           10      // fine samples per coarse sample
-// Static buffer the /api/history JSON is rendered into (one tier per request)
-#define HISTORY_JSON_BUFFER            28000
+// Temperature history: four RAM ring buffers (lost on reboot), see history.h.
+//   ultra  : 1 sample / 1 s,   last 5 min   (300 samples)
+//   fine   : 1 sample / 10 s,  last 1 h     (360 samples, mean of 10 ultra)
+//   mid    : 1 sample / 1 min, last 6 h     (360 samples, mean of 6 fine)
+//   coarse : 1 sample / 5 min, last 24 h    (288 samples, mean of 5 mid)
+// Each sample is 20 bytes, so all four together use ~26 KB of RAM. NOTE: static RAM on the
+// ESP32-S2 is capped at ~121 KB by the linker (the rest is heap); with the JSON buffer below
+// the firmware uses ~109 KB, so growing these needs heap allocation, not bigger static arrays.
+#define HISTORY_SAMPLE_INTERVAL_MS     1000UL
+#define HISTORY_TIERS                  4
+#define HISTORY_COUNT_0                300
+#define HISTORY_COUNT_1                360
+#define HISTORY_COUNT_2                360
+#define HISTORY_COUNT_3                288
+#define HISTORY_EVERY_0                10      // tier-0 samples per tier-1 sample
+#define HISTORY_EVERY_1                6       // tier-1 samples per tier-2 sample
+#define HISTORY_EVERY_2                5       // tier-2 samples per tier-3 sample
+// Static buffer the /api/history JSON is rendered into (one tier per request; the
+// largest tier, 360 samples, needs ~20.5 KB in the worst case)
+#define HISTORY_JSON_BUFFER            23000
 
 // Sensor validity — Dallas readings at or below this value are considered errors
 #define DALLAS_MIN_VALID_TEMP          -20.0

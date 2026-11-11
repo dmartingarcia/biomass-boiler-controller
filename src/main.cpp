@@ -72,7 +72,7 @@ unsigned long displayHoldUntil = 0;
 bool          waterSensorFault = false;
 unsigned long waterFaultSecs   = 0;
 
-// Temperature history (5 s / 30 s / 5 min tiers, see config.h)
+// Temperature history (1 s / 10 s / 1 min / 5 min tiers, see config.h)
 TemperatureHistory history;
 
 // Fixed buffer /api/history is rendered into, with a Print that writes into it
@@ -1462,7 +1462,7 @@ void setup() {
         request->send(response);
     });
 
-    // GET /api/history?tier=ultra|fine|coarse — one tier of the temperature history
+    // GET /api/history?tier=ultra|fine|mid|coarse — one tier of the temperature history
     // (format in history.h). Rendered into a fixed buffer and sent from there: building a
     // 20–30 KB body through AsyncResponseStream would re-allocate on every write.
     webServer.on("/api/history", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1716,7 +1716,7 @@ void loop() {
         }
     }
 
-    // History sample every HISTORY_SAMPLE_INTERVAL_MS (5 s)
+    // History sample every HISTORY_SAMPLE_INTERVAL_MS (1 s)
     if (currentMillis - lastHistoryRecord >= HISTORY_SAMPLE_INTERVAL_MS) {
         lastHistoryRecord = currentMillis;
         recordHistory();

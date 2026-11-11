@@ -7,13 +7,16 @@
 #include <math.h>
 #include "config.h"
 
-// Three-tier temperature history kept in RAM (lost on reboot). Each tier is its own
-// fixed-size ring buffer; nothing is "moved" between them — every tier receives an
-// average of the finer one as samples arrive, and old samples are simply overwritten:
+// Multi-tier temperature history kept in RAM (lost on reboot). Each tier is its own
+// fixed-size ring buffer; nothing is "moved" between them — every tier receives the mean
+// of the previous (finer) one as samples arrive, and old samples are simply overwritten:
 //
-//   ultra  — one sample every HISTORY_SAMPLE_INTERVAL_MS (5 s), last HISTORY_ULTRA_COUNT
-//   fine   — average of HISTORY_FINE_EVERY ultra samples (30 s), last HISTORY_FINE_COUNT
-//   coarse — average of HISTORY_COARSE_EVERY fine samples (5 min), last HISTORY_COARSE_COUNT
+//   ultra  — one sample every HISTORY_SAMPLE_INTERVAL_MS (1 s)
+//   fine   — mean of HISTORY_EVERY_0 ultra samples
+//   mid    — mean of HISTORY_EVERY_1 fine samples
+//   coarse — mean of HISTORY_EVERY_2 mid samples
+//
+// (sizes and factors in config.h)
 //
 // Temperatures are stored as tenths of a degree in int16_t; HISTORY_INVALID marks a
 // missing/invalid reading.
@@ -36,10 +39,15 @@ struct HistorySample {
 
 class TemperatureHistory {
 public:
-    TemperatureHistory()
-        : ultra{ ultraBuf,  HISTORY_ULTRA_COUNT,  0, 0, 0, HISTORY_SAMPLE_INTERVAL_MS / 1000UL },
-          fine  { fineBuf,   HISTORY_FINE_COUNT,   0, 0, 0, (HISTORY_SAMPLE_INTERVAL_MS / 1000UL) * HISTORY_FINE_EVERY },
-          coarse{ coarseBuf, HISTORY_COARSE_COUNT, 0, 0, 0, (HISTORY_SAMPLE_INTERVAL_MS / 1000UL) * HISTORY_FINE_EVERY * HISTORY_COARSE_EVERY } {}
+    TemperatureHistory() {
+        static const int caps[HISTORY_TIERS]  = { HISTORY_COUNT_0, HISTORY_COUNT_1, HISTORY_COUNT_2, HISTORY_COUNT_3 };
+        HistorySample* bufs[HISTORY_TIERS]    = { buf0, buf1, buf2, buf3 };
+        unsigned long step = HISTORY_SAMPLE_INTERVAL_MS / 1000UL;
+        for (int i = 0; i < HISTORY_TIERS; i++) {
+            tiers[i] = { bufs[i], caps[i], 0, 0, 0, step };
+            if (i < HISTORY_TIERS - 1) step *= every(i);
+        }
+    }
 
     void begin() { lock = xSemaphoreCreateMutex(); }
 
@@ -66,26 +74,25 @@ public:
         memcpy(s.t, temps, sizeof(s.t));
         s.air   = air;
         s.flags = flags;
-        push(ultra, s);
+        push(tiers[0], s);
 
-        if (++sinceFine >= HISTORY_FINE_EVERY && ultra.count >= HISTORY_FINE_EVERY) {
-            sinceFine = 0;
-            push(fine, averageLast(ultra, HISTORY_FINE_EVERY));
-            if (++sinceCoarse >= HISTORY_COARSE_EVERY && fine.count >= HISTORY_COARSE_EVERY) {
-                sinceCoarse = 0;
-                push(coarse, averageLast(fine, HISTORY_COARSE_EVERY));
-            }
+        // cascade: every N samples of tier i, tier i+1 gets their mean
+        for (int i = 0; i < HISTORY_TIERS - 1; i++) {
+            if (++since[i] < every(i) || tiers[i].count < every(i)) break;
+            since[i] = 0;
+            push(tiers[i + 1], averageLast(tiers[i], every(i)));
         }
         xSemaphoreGive(lock);
     }
 
-    // Render ONE tier ("ultra", "fine" or "coarse") as JSON (column-oriented, oldest → newest):
+    // Render ONE tier ("ultra", "fine", "mid" or "coarse") as JSON (column-oriented, oldest → newest):
     //   {"channels":[...],"<tier>":{"step":s,"age":a,"n":n,"series":{"boiler_supply":[...],...}}}
     // Temperatures are tenths of °C (null = invalid); "air" is %, "flags" a bitmask;
     // step = seconds between samples, age = seconds since the tier's newest sample.
     // One tier per request keeps each response small (the caller renders into a fixed buffer).
     bool writeTierJson(Print& out, const char* tier) {
-        const Ring* r = strcmp(tier, "ultra") == 0 ? &ultra : strcmp(tier, "fine") == 0 ? &fine : strcmp(tier, "coarse") == 0 ? &coarse : nullptr;
+        const Ring* r = nullptr;
+        for (int i = 0; i < HISTORY_TIERS; i++) if (strcmp(tier, tierName(i)) == 0) r = &tiers[i];
         if (!r || !lock || xSemaphoreTake(lock, pdMS_TO_TICKS(500)) != pdTRUE) return false;
         unsigned long now = millis();
         out.print("{\"channels\":[");
@@ -171,11 +178,22 @@ private:
         out.print("}}");
     }
 
-    HistorySample ultraBuf[HISTORY_ULTRA_COUNT];
-    HistorySample fineBuf[HISTORY_FINE_COUNT];
-    HistorySample coarseBuf[HISTORY_COARSE_COUNT];
-    Ring ultra, fine, coarse;
-    int sinceFine = 0, sinceCoarse = 0;
+    static const char* tierName(int i) {
+        static const char* const n[HISTORY_TIERS] = { "ultra", "fine", "mid", "coarse" };
+        return n[i];
+    }
+    // samples of tier i that make one sample of tier i+1
+    static int every(int i) {
+        static const int e[HISTORY_TIERS - 1] = { HISTORY_EVERY_0, HISTORY_EVERY_1, HISTORY_EVERY_2 };
+        return e[i];
+    }
+
+    HistorySample buf0[HISTORY_COUNT_0];
+    HistorySample buf1[HISTORY_COUNT_1];
+    HistorySample buf2[HISTORY_COUNT_2];
+    HistorySample buf3[HISTORY_COUNT_3];
+    Ring tiers[HISTORY_TIERS];
+    int since[HISTORY_TIERS - 1] = { 0, 0, 0 };
     SemaphoreHandle_t lock = nullptr;
 };
 
