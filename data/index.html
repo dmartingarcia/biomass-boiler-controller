@@ -433,6 +433,7 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
         <h2>Sistema</h2>
         <div class="row"><span>Tiempo encendido</span><span id="sys-uptime">--</span></div>
         <div class="row"><span>Memoria libre</span><span id="sys-heap" style="font-size:13px">--</span></div>
+        <div class="row"><span>Historial de reinicios</span><span id="sys-boots" style="text-align:right;font-size:12px;max-width:65%">--</span></div>
         <div class="row"><span>Último reinicio</span><span id="sys-reset" style="text-align:right;font-size:13px">--</span></div>
         <div class="actions" style="margin:12px 0 0"><button type="button" class="btn danger" onclick="if(confirm('¿Reiniciar el ESP32? Se pasará a modo automático.')) fetch('/api/reset',{method:'POST'}).then(()=>toast('Reiniciando…'))">Reiniciar</button></div>
     </div>
@@ -535,6 +536,7 @@ function applyStatus(d) {
     if (document.activeElement !== sl) { sl.value = d.target_burning_temp; $('cfg-target-val').textContent = Math.round(d.target_burning_temp); }
     if (d.uptime_s != null) $('sys-uptime').textContent = fmtDur(d.uptime_s);
     if (d.reset_reason) $('sys-reset').textContent = d.reset_reason;
+    if (d.boot_history != null) $('sys-boots').textContent = 'arranque #' + d.boot_count + ' · ' + (d.boot_history || '—');
     if (d.heap_free != null) $('sys-heap').textContent = (d.heap_free / 1024).toFixed(0) + ' KB libres · bloque mayor ' + (d.heap_max_block / 1024).toFixed(0) + ' KB';
 
     // Mode

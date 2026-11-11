@@ -156,6 +156,43 @@ const char* resetReasonText(esp_reset_reason_t r) {
     }
 }
 
+// Reset history kept in NVS: the last 8 reset reasons and a boot counter. It survives reboot
+// loops, so once the device finally runs we can see WHY it kept restarting.
+String bootHistory = "";
+uint32_t bootCount = 0;
+static const char* shortReason(uint8_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:  return "encendido";
+        case ESP_RST_EXT:      return "reset-ext";
+        case ESP_RST_SW:       return "software";
+        case ESP_RST_PANIC:    return "PANIC";
+        case ESP_RST_INT_WDT:  return "WDT-int";
+        case ESP_RST_TASK_WDT: return "WDT-tarea";
+        case ESP_RST_WDT:      return "WDT";
+        case ESP_RST_BROWNOUT: return "BROWNOUT";
+        default:               return "?";
+    }
+}
+void recordBootHistory(esp_reset_reason_t rr) {
+    uint8_t ring[8] = {0};
+    Preferences p;
+    if (p.begin("boot-hist", false)) {
+        bootCount = p.getUInt("n", 0) + 1;
+        p.getBytes("r", ring, sizeof(ring));
+        memmove(ring, ring + 1, 7);
+        ring[7] = (uint8_t)rr;                       // oldest first, newest last
+        p.putUInt("n", bootCount);
+        p.putBytes("r", ring, sizeof(ring));
+        p.end();
+    }
+    bootHistory = "";
+    for (int i = 0; i < 8; i++) {
+        if (ring[i] == 0) continue;
+        if (bootHistory.length()) bootHistory += " → ";
+        bootHistory += shortReason(ring[i]);
+    }
+}
+
 // ── Self-test (launched from the UI, never at boot) ──────────────────────────────
 // Needs manual mode: the relays are pulsed (inverted for a moment, then restored to the
 // state they had), so the automatic logic must not be driving them. Runs inside loop();
@@ -666,6 +703,8 @@ void setup() {
         doc["pid_source"] = systemSettings.pidSource;
         doc["water_sensor_fault"] = waterSensorFault;
         doc["reset_reason"] = bootReason;
+        doc["boot_count"] = bootCount;
+        doc["boot_history"] = bootHistory;
         doc["heap_free"] = ESP.getFreeHeap();
         doc["heap_max_block"] = ESP.getMaxAllocHeap();
         { float pv = pidProcessValue(); if (!isnan(pv)) doc["pid_value"] = pv; else doc["pid_value"] = nullptr; }
@@ -1636,7 +1675,9 @@ void setup() {
     {
         esp_reset_reason_t rr = esp_reset_reason();
         bootReason = String(resetReasonText(rr)) + " (código " + String((int)rr) + ")";
+        recordBootHistory(rr);
         logBuffer.log("Último reinicio: " + bootReason);
+        logBuffer.log("Arranque #" + String(bootCount) + " · últimos reinicios: " + bootHistory);
     }
 
 
