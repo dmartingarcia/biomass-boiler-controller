@@ -10,7 +10,8 @@ def git(*args):
         return ""
 
 sha = git("rev-parse", "--short", "HEAD") or "unknown"
-if git("status", "--porcelain"):
+# Only what ends up in the firmware / web image counts (the IDE rewrites .vscode on its own)
+if git("status", "--porcelain", "--", "src", "include", "data", "lib", "scripts", "platformio.ini"):
     sha += "-dirty"
 env.Append(CPPDEFINES=[("GIT_VERSION", env.StringifyMacro(sha))])
 print("Firmware version: " + sha)
