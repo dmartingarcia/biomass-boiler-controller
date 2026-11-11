@@ -634,7 +634,7 @@ const STRIPS = [
     { bit: 0x04, label: 'Ventil.',    color: '#2f9e44' }, { bit: 0x08, label: 'Aux.',      color: '#9c36b5' },
     { bit: 0x10, label: 'Manual',     color: '#e8590c' },
 ];
-const RANGES = [ { s: 3600, l: '1 h' }, { s: 10800, l: '3 h' }, { s: 21600, l: '6 h' }, { s: 43200, l: '12 h' }, { s: 86400, l: '24 h' } ];
+const RANGES = [ { s: 300, l: '5 min' }, { s: 3600, l: '1 h' }, { s: 10800, l: '3 h' }, { s: 21600, l: '6 h' }, { s: 43200, l: '12 h' }, { s: 86400, l: '24 h' } ];
 let HIST = null;
 // Charts are only worth refreshing while a page that shows one is open
 const chartIdle = () => !(document.getElementById('page-charts').classList.contains('active') || document.getElementById('page-dashboard').classList.contains('active'));                       // { pts: {id: [{age, v}]}, flags: [{age, f}] }
