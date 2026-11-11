@@ -726,12 +726,16 @@ class Chart {
         const xOf = e => { const r = canvas.getBoundingClientRect(); return (e.touches ? e.touches[0].clientX : e.clientX) - r.left; };
         const inPlot = x => this.geo && x >= this.geo.L && x <= this.geo.L + this.geo.pw;
         const select = x => { if (inPlot(x)) { this.selTs = this.geo.tsAt(x); this.draw(); } };
+        // Mouse outside the plot area: back to the newest values (touch keeps its selection)
+        const latest = () => { if (this.selTs != null) { this.selTs = null; this.draw(); } };
         // Mouse: hover selects, drag zooms into a section, double-click resets. Touch: slide to select.
         canvas.addEventListener('mousedown', e => { const x = xOf(e); if (opt.zoom && inPlot(x)) this.drag = { x0: x, x1: x }; });
         canvas.addEventListener('mousemove', e => {
             const x = xOf(e);
-            if (this.drag) { this.drag.x1 = Math.min(Math.max(x, this.geo.L), this.geo.L + this.geo.pw); this.draw(); } else select(x);
+            if (this.drag) { this.drag.x1 = Math.min(Math.max(x, this.geo.L), this.geo.L + this.geo.pw); this.draw(); }
+            else if (inPlot(x)) select(x); else latest();
         });
+        canvas.addEventListener('mouseleave', () => { if (!this.drag) latest(); });
         window.addEventListener('mouseup', () => {
             const d = this.drag; if (!d) return; this.drag = null;
             if (Math.abs(d.x1 - d.x0) > 10 && this.geo) {
@@ -882,7 +886,7 @@ function renderDetail(age, picks, ts) {
     h += picks.length ? picks.map(p => `<div class="d-row"><span><i style="background:${p.s.color}"></i>${shortLabel(p.s)}</span><b>${p.v.toFixed(1)} °C</b></div>`).join('')
                       : '<div class="empty" style="padding:10px 0">Sin datos en este instante</div>';
     if (f != null) h += '<div class="d-sep"></div>' + STRIPS.map(st => `<div class="d-row"><span><i style="background:${st.color}"></i>${st.label}</span><b class="${f & st.bit ? 'on' : 'offv'}">${f & st.bit ? 'ON' : '—'}</b></div>`).join('');
-    h += '<div class="d-hint">Pasa el ratón o desliza el dedo: la selección se mantiene.<br>Arrastra sobre la gráfica para ampliar una sección; doble clic para restablecer.</div>';
+    h += '<div class="d-hint">Pasa el ratón por la gráfica (fuera de ella se muestran los últimos valores) o desliza el dedo: la selección táctil se mantiene.<br>Arrastra sobre la gráfica para ampliar una sección; doble clic para restablecer.</div>';
     el.innerHTML = h;
 }
 function renderMiniCaption(age, picks, ts) {
