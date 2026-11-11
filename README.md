@@ -35,7 +35,7 @@ Cableado completo en [wiring_diagram.md](wiring_diagram.md).
 
 - **Panel**: temperaturas, actuadores, estado del PID y última hora.
 - **Manual**: relés con su estado real, servo en vivo y **autotest** (pulsa cada relé 1 s, prueba pantalla, termopar y Dallas).
-- **Gráficas**: histórico de temperaturas, 1 muestra/min la última hora y 1 cada 5 min hasta 24 h (en RAM: se pierde al reiniciar).
+- **Gráficas**: histórico de temperaturas con zoom (arrastra para ampliar), panel de detalle del instante elegido, horas reales y descarga en CSV. Resolución en tres niveles: **5 s los últimos 30 min, 30 s hasta 3 h y 5 min hasta 24 h** (los tramos antiguos son medias). Vive en RAM (~20 KB): se pierde al reiniciar.
 - **Config**: PID y su fuente, umbrales, servo, debounce, MQTT y **asignación de relés a canales**.
 - **Diagnóstico**: sensores Dallas y roles (con direcciones), OLED, MQTT, backup (export/import), causa del último reinicio y logs.
 
@@ -65,7 +65,7 @@ test/host/run.sh
 | Método y ruta | Qué hace |
 |---|---|
 | `GET /api/status` | estado completo (temperaturas, relés, modo, PID, alarmas, motivo de reinicio) |
-| `GET /api/history` | histórico en formato columnar |
+| `GET /api/history?tier=ultra\|fine\|coarse` | un nivel del histórico en formato columnar |
 | `POST /api/manual` `{active}` | activa/desactiva el modo manual |
 | `POST /api/manual/actuators` | relés y servo (solo en manual) |
 | `POST /api/selftest` · `GET /api/selftest` | lanza / consulta el autotest (solo en manual) |

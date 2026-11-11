@@ -72,8 +72,26 @@ unsigned long displayHoldUntil = 0;
 bool          waterSensorFault = false;
 unsigned long waterFaultSecs   = 0;
 
-// Temperature history (1/min for 1 h, then 1/5 min for 24 h)
+// Temperature history (5 s / 30 s / 5 min tiers, see config.h)
 TemperatureHistory history;
+
+// Fixed buffer /api/history is rendered into, with a Print that writes into it
+class HistoryBuffer : public Print {
+public:
+    HistoryBuffer(char* b, size_t cap) : buf(b), cap(cap), len(0), over(false) {}
+    size_t write(uint8_t c) override { return write(&c, 1); }
+    size_t write(const uint8_t* d, size_t n) override {
+        if (len + n > cap) { over = true; return 0; }
+        memcpy(buf + len, d, n); len += n; return n;
+    }
+    size_t length() const { return len; }
+    bool overflow() const { return over; }
+private:
+    char* buf; size_t cap, len; bool over;
+};
+static char historyJson[HISTORY_JSON_BUFFER];
+volatile bool historyBusy = false;
+unsigned long historyBusySince = 0;
 unsigned long lastHistoryRecord = 0;
 
 // Runtime-configurable settings (loaded from LittleFS, defaults from config.h)
@@ -648,6 +666,8 @@ void setup() {
         doc["pid_source"] = systemSettings.pidSource;
         doc["water_sensor_fault"] = waterSensorFault;
         doc["reset_reason"] = bootReason;
+        doc["heap_free"] = ESP.getFreeHeap();
+        doc["heap_max_block"] = ESP.getMaxAllocHeap();
         { float pv = pidProcessValue(); if (!isnan(pv)) doc["pid_value"] = pv; else doc["pid_value"] = nullptr; }
 
         // Add servo range configuration
@@ -1442,11 +1462,24 @@ void setup() {
         request->send(response);
     });
 
-    // GET /api/history — temperature history (see history.h for the format)
+    // GET /api/history?tier=ultra|fine|coarse — one tier of the temperature history
+    // (format in history.h). Rendered into a fixed buffer and sent from there: building a
+    // 20–30 KB body through AsyncResponseStream would re-allocate on every write.
     webServer.on("/api/history", HTTP_GET, [](AsyncWebServerRequest *request) {
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        history.writeJson(*response);
-        request->send(response);
+        const char* tier = request->hasParam("tier") ? request->getParam("tier")->value().c_str() : "coarse";
+        // One render at a time; the flag is released when the request ends (or after 10 s)
+        if (historyBusy && millis() - historyBusySince < 10000) {
+            request->send(503, "application/json", "{\"error\":\"busy\"}");
+            return;
+        }
+        HistoryBuffer out(historyJson, sizeof(historyJson));
+        if (!history.writeTierJson(out, tier) || out.overflow()) {
+            request->send(out.overflow() ? 500 : 400, "application/json", "{\"error\":\"history unavailable\"}");
+            return;
+        }
+        historyBusy = true; historyBusySince = millis();
+        request->onDisconnect([]() { historyBusy = false; });
+        request->send_P(200, "application/json", (const uint8_t*)historyJson, out.length());
     });
 
     // GET /api/mqtt/status — connection state, fail count, next retry countdown
@@ -1683,8 +1716,8 @@ void loop() {
         }
     }
 
-    // History sample once per minute
-    if (currentMillis - lastHistoryRecord >= HISTORY_FINE_INTERVAL_MS) {
+    // History sample every HISTORY_SAMPLE_INTERVAL_MS (5 s)
+    if (currentMillis - lastHistoryRecord >= HISTORY_SAMPLE_INTERVAL_MS) {
         lastHistoryRecord = currentMillis;
         recordHistory();
     }

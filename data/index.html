@@ -306,7 +306,7 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
             <aside class="detail" id="detail"></aside>
         </div>
         <p style="font-size:12px;color:var(--muted);margin-top:8px">
-            1 muestra/min durante la última hora; después 1 muestra cada 5 min (media) hasta 24 h. Las horas son las de tu navegador.
+            Detalle: 1 muestra cada 5 s los últimos 30 min, cada 30 s hasta 3 h y cada 5 min hasta 24 h (los tramos antiguos son medias). Las horas son las de tu navegador.
             Los datos viven en la RAM del ESP32: se pierden al reiniciar. Franjas inferiores: relés activos y modo manual.
         </p>
     </div>
@@ -432,6 +432,7 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
     <div class="card">
         <h2>Sistema</h2>
         <div class="row"><span>Tiempo encendido</span><span id="sys-uptime">--</span></div>
+        <div class="row"><span>Memoria libre</span><span id="sys-heap" style="font-size:13px">--</span></div>
         <div class="row"><span>Último reinicio</span><span id="sys-reset" style="text-align:right;font-size:13px">--</span></div>
         <div class="actions" style="margin:12px 0 0"><button type="button" class="btn danger" onclick="if(confirm('¿Reiniciar el ESP32? Se pasará a modo automático.')) fetch('/api/reset',{method:'POST'}).then(()=>toast('Reiniciando…'))">Reiniciar</button></div>
     </div>
@@ -534,6 +535,7 @@ function applyStatus(d) {
     if (document.activeElement !== sl) { sl.value = d.target_burning_temp; $('cfg-target-val').textContent = Math.round(d.target_burning_temp); }
     if (d.uptime_s != null) $('sys-uptime').textContent = fmtDur(d.uptime_s);
     if (d.reset_reason) $('sys-reset').textContent = d.reset_reason;
+    if (d.heap_free != null) $('sys-heap').textContent = (d.heap_free / 1024).toFixed(0) + ' KB libres · bloque mayor ' + (d.heap_max_block / 1024).toFixed(0) + ' KB';
 
     // Mode
     if (manualMode && !d.manual_mode && !userChangingMode)
@@ -639,24 +641,40 @@ try { const v = JSON.parse(localStorage.getItem('chartVisible') || 'null'); if (
 
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
-// Merge both tiers into a single age-ordered (oldest → newest) point list per series
-function buildHist(d) {
+// Merge the history tiers (coarse → fine → ultra) into one age-ordered (oldest → newest)
+// point list per series. Each tier only contributes the part that is OLDER than the oldest
+// sample of the next finer tier, so the finest data available wins everywhere.
+const TIERS = ['coarse', 'fine', 'ultra'];
+function buildHist(parts) {
+    const tiers = TIERS.map(k => parts[k] && parts[k][k]).filter(t => t && t.n);
+    const ageOf = (t, i) => t.age + (t.n - 1 - i) * t.step;
+    const first = Object.values(parts)[0];
+    const chans = first.channels.concat(['air', 'flags']);
     const pts = {}, flags = [];
-    const f = d.fine, c = d.coarse;
-    const fineOldest = f.n ? f.age + (f.n - 1) * f.step : 0;
-    const chans = d.channels.concat(['air', 'flags']);
     for (const ch of chans) {
         const arr = [];
-        const cs = c.series[ch] || [], fs = f.series[ch] || [];
-        cs.forEach((v, j) => { const age = c.age + (c.n - 1 - j) * c.step; if (!f.n || age > fineOldest) arr.push({ age, v }); });
-        fs.forEach((v, i) => arr.push({ age: f.age + (f.n - 1 - i) * f.step, v }));
-        if (ch === 'flags') arr.forEach(p => flags.push({ age: p.age, f: p.v })); else pts[ch] = arr.map(p => ({ age: p.age, v: p.v == null ? null : (ch === 'air' ? p.v : p.v / 10) }));
+        tiers.forEach((t, ti) => {
+            const finer = tiers[ti + 1];
+            const limit = finer ? ageOf(finer, 0) : -Infinity;
+            (t.series[ch] || []).forEach((v, i) => { const age = ageOf(t, i); if (age > limit) arr.push({ age, v }); });
+        });
+        if (ch === 'flags') arr.forEach(p => flags.push({ age: p.age, f: p.v }));
+        else pts[ch] = arr.map(p => ({ age: p.age, v: p.v == null ? null : (ch === 'air' ? p.v : p.v / 10) }));
     }
     return { pts, flags, t0: Date.now() };   // t0: ages are relative to this instant
 }
 
+let historyLoading = false;
 async function loadHistory() {
-    try { const r = await fetch('/api/history'); const d = await r.json(); if (!d.error) { HIST = buildHist(d); redrawCharts(); } } catch (e) {}
+    if (historyLoading) return;
+    historyLoading = true;
+    try {
+        const parts = {};
+        for (const k of TIERS) {
+            try { const d = await (await fetch('/api/history?tier=' + k)).json(); if (!d.error) parts[k] = d; } catch (e) {}
+        }
+        if (Object.keys(parts).length) { HIST = buildHist(parts); redrawCharts(); }
+    } finally { historyLoading = false; }
 }
 
 function niceStep(span, ticks) {
@@ -669,11 +687,11 @@ function fmtAge(s) {
     return 'hace ' + (s / 3600).toFixed(1).replace('.0', '') + ' h';
 }
 
-const TICK_STEPS = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];   // seconds
+const TICK_STEPS = [10, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];   // seconds
 const pad2 = n => String(n).padStart(2, '0');
-function clock(ms, withDate) {
+function clock(ms, withDate, withSec) {
     const d = new Date(ms);
-    return (withDate ? pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + ' ' : '') + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    return (withDate ? pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + ' ' : '') + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + (withSec ? ':' + pad2(d.getSeconds()) : '');
 }
 
 class Chart {
@@ -695,7 +713,7 @@ class Chart {
             const d = this.drag; if (!d) return; this.drag = null;
             if (Math.abs(d.x1 - d.x0) > 10 && this.geo) {
                 const t1 = this.geo.tsAt(Math.min(d.x0, d.x1)), t2 = this.geo.tsAt(Math.max(d.x0, d.x1));
-                if (t2 - t1 >= 120000) { this.setView(t1, t2); return; }     // at least 2 minutes wide
+                if (t2 - t1 >= 60000) { this.setView(t1, t2); return; }     // at least 1 minute wide
             }
             select(d.x0); this.draw();
         });
@@ -746,7 +764,7 @@ class Chart {
         const ticks = [];
         for (let tk = Math.ceil((tA - off) / stepMs) * stepMs + off; tk <= tB; tk += stepMs) {
             const d = new Date(tk);
-            ticks.push({ x: X((t0 - tk) / 1000), label: clock(tk, d.getHours() === 0 && d.getMinutes() === 0 && span > 6 * 3600) });
+            ticks.push({ x: X((t0 - tk) / 1000), label: clock(tk, d.getHours() === 0 && d.getMinutes() === 0 && span > 6 * 3600, stepMs < 60000) });
         }
 
         const picks = [];
@@ -837,7 +855,7 @@ const relAge = age => age < 90 ? 'ahora' : fmtAge(age);
 function renderDetail(age, picks, ts) {
     const el = $('detail'); if (!el) return;
     const f = flagsAt(age);
-    let h = '<div class="d-when">' + clock(ts, true) + '<small> · ' + relAge(age) + '</small></div>';
+    let h = '<div class="d-when">' + clock(ts, true, true) + '<small> · ' + relAge(age) + '</small></div>';
     h += picks.length ? picks.map(p => `<div class="d-row"><span><i style="background:${p.s.color}"></i>${shortLabel(p.s)}</span><b>${p.v.toFixed(1)} °C</b></div>`).join('')
                       : '<div class="empty" style="padding:10px 0">Sin datos en este instante</div>';
     if (f != null) h += '<div class="d-sep"></div>' + STRIPS.map(st => `<div class="d-row"><span><i style="background:${st.color}"></i>${st.label}</span><b class="${f & st.bit ? 'on' : 'offv'}">${f & st.bit ? 'ON' : '—'}</b></div>`).join('');

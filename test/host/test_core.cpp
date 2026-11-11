@@ -36,21 +36,41 @@ static void test_pid() {
 }
 
 static void test_history() {
-    printf("Temperature history\n");
+    printf("Temperature history (3 tiers)\n");
     TemperatureHistory h; h.begin();
     int16_t t[HISTORY_CHANNELS];
-    for (int m = 0; m < 70; m++) {
+    const int N = 2200;                                   // 2200 * 5 s ≈ 3 h 03 min
+    for (int i = 1; i <= N; i++) {
         for (int c = 0; c < HISTORY_CHANNELS; c++) t[c] = 100 + c;
-        t[0] = m; t[1] = (m == 3) ? HISTORY_INVALID : 500;
-        fakeMs += 60000; h.record(t, m % 101, m & 3);
+        t[0] = i;                                         // ramp, so the averages are predictable
+        fakeMs += HISTORY_SAMPLE_INTERVAL_MS; h.record(t, i % 101, i & 3);
     }
-    Capture cap; h.writeJson(cap);
-    CHECK(cap.s.find("\"fine\":{\"step\":60,\"age\":0,\"n\":60") != std::string::npos, "fine tier is capped at 60 samples (1 h)");
-    CHECK(cap.s.find("\"coarse\":{\"step\":300") != std::string::npos, "coarse tier has a 5 min step");
-    CHECK(cap.s.find("\"boiler_supply\":[10,11,12") != std::string::npos, "oldest fine sample is minute 10 (60 newest kept)");
-    CHECK(cap.s.find("\"boiler_supply\":[2,7,12,17") != std::string::npos, "coarse = average of 5 fine samples");
-    CHECK(cap.s.find("\"boiler_return\":[500,500,500") != std::string::npos, "invalid samples are ignored when averaging");
+    Capture u, f, c; h.writeTierJson(u, "ultra"); h.writeTierJson(f, "fine"); h.writeTierJson(c, "coarse");
+    CHECK(u.s.find("\"ultra\":{\"step\":5,\"age\":0,\"n\":360") != std::string::npos, "ultra: 360 samples every 5 s (30 min), newest age 0");
+    CHECK(u.s.find("\"boiler_supply\":[1841,1842") != std::string::npos, "ultra keeps only the newest 360 (oldest is #1841)");
+    CHECK(f.s.find("\"fine\":{\"step\":30,\"age\":20,\"n\":360") != std::string::npos, "fine: 360 samples every 30 s (3 h)");
+    CHECK(f.s.find("\"boiler_supply\":[39,45,51") != std::string::npos, "fine = average of 6 ultra samples (oldest kept is the mean of #37..#42)");
+    CHECK(c.s.find("\"coarse\":{\"step\":300,\"age\":200,\"n\":36") != std::string::npos, "coarse: one sample per 5 min (average of 10 fine)");
+    CHECK(c.s.find("\"boiler_supply\":[30,90,150") != std::string::npos, "coarse values are the mean of the right fine samples");
+    CHECK(!h.writeTierJson(u, "bogus"), "unknown tier rejected");
+
+    // invalid readings are skipped when averaging
+    TemperatureHistory g; g.begin();
+    for (int i = 1; i <= 6; i++) { for (int k = 0; k < HISTORY_CHANNELS; k++) t[k] = 100; t[1] = (i == 3) ? HISTORY_INVALID : 500; fakeMs += 5000; g.record(t, 0, 0); }
+    Capture gc; g.writeTierJson(gc, "fine");
+    CHECK(gc.s.find("\"boiler_return\":[500]") != std::string::npos, "invalid samples are ignored when averaging");
     CHECK(TemperatureHistory::encode(NAN, true) == HISTORY_INVALID, "NaN is stored as invalid");
+
+    // worst-case JSON (4-digit and negative temperatures, all flags) must fit the static buffer
+    TemperatureHistory w; w.begin();
+    for (int i = 0; i < 6 * 10 * 288 + 50; i++) {
+        for (int k = 0; k < HISTORY_CHANNELS; k++) t[k] = (k & 1) ? -1234 : 1234;
+        fakeMs += 5000; w.record(t, 100, 31);
+    }
+    size_t worst = 0;
+    for (const char* name : { "ultra", "fine", "coarse" }) { Capture cp; w.writeTierJson(cp, name); if (cp.s.size() > worst) worst = cp.s.size(); }
+    printf("        (largest tier JSON: %zu bytes, buffer %d)\n", worst, HISTORY_JSON_BUFFER);
+    CHECK(worst < (size_t)HISTORY_JSON_BUFFER, "largest tier JSON fits HISTORY_JSON_BUFFER");
 }
 
 static void test_relay_config() {
