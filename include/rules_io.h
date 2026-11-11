@@ -4,8 +4,8 @@
 // JSON <-> RuleSet and NVS persistence for the relay rules.
 // JSON shape (also used by GET/POST /api/rules):
 //   {"boiler_pump":[[{"a":10,"op":">","v":0.5,"h":0}], ...], "heating_pump":[...], "fans":[...]}
-//   a = variable, b = optional second temperature (a - b), op = ">", "<" or "missing" (no reading),
-//   v = value, h = hysteresis (both absent for "missing")
+//   a = variable, b = optional second temperature (a - b), op = ">", "<", "missing" (no reading),
+//   "true" / "false" (boolean variables 9 and 10); v = value, h = hysteresis (absent for the last three)
 // Each relay key holds a list of groups (OR); each group a list of conditions (AND).
 
 #include <ArduinoJson.h>
@@ -38,10 +38,17 @@ inline const char* rulesFromJson(JsonObjectConst obj, RuleSet& out) {
                 if (strcmp(op, ">") == 0) c.op = RULE_OP_GT;
                 else if (strcmp(op, "<") == 0) c.op = RULE_OP_LT;
                 else if (strcmp(op, "missing") == 0) c.op = RULE_OP_MISSING;
-                else return "Operador de regla no válido (usa >, < o missing)";
-                if (c.op != RULE_OP_MISSING && !cv["v"].is<float>() && !cv["v"].is<int>()) return "Falta el valor de una regla";
-                c.value = c.op == RULE_OP_MISSING ? 0.0f : cv["v"].as<float>();
-                c.hyst  = cv["h"] | 0.0f;
+                else if (strcmp(op, "true") == 0)    c.op = RULE_OP_TRUE;
+                else if (strcmp(op, "false") == 0)   c.op = RULE_OP_FALSE;
+                else return "Operador de regla no válido (usa >, <, missing, true o false)";
+                bool noValue = c.op >= RULE_OP_MISSING;      // missing / true / false take no number
+                if (!noValue && !cv["v"].is<float>() && !cv["v"].is<int>()) return "Falta el valor de una regla";
+                c.value = noValue ? 0.0f : cv["v"].as<float>();
+                c.hyst  = noValue ? 0.0f : (cv["h"] | 0.0f);
+                // Rules saved by an earlier version compared the 1/0 variables with "> 0.5" / "< 0.5"
+                if (c.a >= RULE_TEMP_VARS && (c.op == RULE_OP_GT || c.op == RULE_OP_LT)) {
+                    c.op = c.op == RULE_OP_GT ? RULE_OP_TRUE : RULE_OP_FALSE; c.value = 0; c.hyst = 0;
+                }
             }
         }
         next.relay[r] = rr;
@@ -62,8 +69,9 @@ inline void rulesToJson(const RuleSet& rs, JsonObject obj) {
                 JsonObject o = conds.createNestedObject();
                 o["a"] = c.a;
                 if (c.b >= 0) o["b"] = c.b;
-                o["op"] = c.op == RULE_OP_MISSING ? "missing" : (c.op == RULE_OP_GT ? ">" : "<");
-                if (c.op != RULE_OP_MISSING) { o["v"] = c.value; o["h"] = c.hyst; }
+                static const char* const opName[] = { ">", "<", "missing", "true", "false" };
+                o["op"] = opName[c.op <= RULE_OP_FALSE ? c.op : 0];
+                if (c.op < RULE_OP_MISSING) { o["v"] = c.value; o["h"] = c.hyst; }
             }
         }
     }

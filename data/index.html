@@ -982,7 +982,7 @@ fetch('/api/config').then(r => r.json()).then(fillConfig).catch(() => {});
 
 /* ── Reglas de relés ───────────────────────────────────────────── */
 const RULE_RELAYS = [['boiler_pump', 'Bomba de caldera'], ['heating_pump', 'Bomba de calefacción'], ['fans', 'Ventiladores']];
-const RULE_VARS = PID_SOURCES.concat(['Bomba de caldera encendida (1 = sí)', 'Hay combustión (1 = sí)']);
+const RULE_VARS = PID_SOURCES.concat(['Bomba de caldera encendida', 'Hay combustión']);
 let RULES = {}, RULE_MAX = { groups: 4, conds: 4 };
 const optList = (list, sel, none) => (none ? `<option value="-1"${sel < 0 ? ' selected' : ''}>${none}</option>` : '') + list.map((l, i) => `<option value="${i}"${i === sel ? ' selected' : ''}>${l}</option>`).join('');
 function renderRules() {
@@ -992,22 +992,40 @@ function renderRules() {
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);font-weight:700">
                 <span>${gi ? 'O  ' : ''}Grupo ${gi + 1} — todas estas condiciones</span>
                 <button type="button" class="btn sm danger" onclick="ruleDelGroup('${key}',${gi})">Quitar grupo</button></div>
-            ${g.map((c, ci) => `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:5px 0">
-                ${ci ? '<b style="font-size:12px">Y</b>' : ''}
-                <select onchange="ruleSet('${key}',${gi},${ci},'a',+this.value)">${optList(RULE_VARS, c.a)}</select>
-                ${c.a < 9 ? `<span>menos</span><select onchange="ruleSet('${key}',${gi},${ci},'b',+this.value)">${optList(PID_SOURCES, c.b == null ? -1 : c.b, '—')}</select>` : ''}
-                <select onchange="ruleSet('${key}',${gi},${ci},'op',this.value)"><option value="&gt;"${c.op === '>' ? ' selected' : ''}>mayor que</option><option value="&lt;"${c.op === '<' ? ' selected' : ''}>menor que</option>${c.a < 9 ? `<option value="missing"${c.op === 'missing' ? ' selected' : ''}>sin lectura</option>` : ''}</select>
-                ${c.op === 'missing' ? '<span style="font-size:12px;color:var(--muted)">(sin lectura válida durante más de 1 min)</span>' : `<input type="number" step="0.5" value="${c.v}" style="width:80px" onchange="ruleSet('${key}',${gi},${ci},'v',parseFloat(this.value))">
-                <span style="font-size:12px;color:var(--muted)">histéresis</span>
-                <input type="number" step="0.5" min="0" value="${c.h || 0}" style="width:64px" onchange="ruleSet('${key}',${gi},${ci},'h',parseFloat(this.value))">`}
-                <button type="button" class="btn sm grey" onclick="ruleDelCond('${key}',${gi},${ci})">✕</button></div>`).join('')}
+            ${g.map((c, ci) => {
+                const kind = c.a >= 9 ? 'bool' : (c.b != null ? 'delta' : 'temp'), id = `'${key}',${gi},${ci}`;
+                const kindSel = `<select onchange="ruleKind(${id},this.value)"><option value="temp"${kind === 'temp' ? ' selected' : ''}>Temperatura</option><option value="delta"${kind === 'delta' ? ' selected' : ''}>Diferencia</option><option value="bool"${kind === 'bool' ? ' selected' : ''}>Estado (sí/no)</option></select>`;
+                const sel = (f, list, cur, off) => `<select onchange="ruleSet(${id},'${f}',+this.value)">${list.map((l, i) => `<option value="${i + off}"${i + off === cur ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+                const opSel = `<select onchange="ruleSet(${id},'op',this.value)"><option value="&gt;"${c.op === '>' ? ' selected' : ''}>mayor que</option><option value="&lt;"${c.op === '<' ? ' selected' : ''}>menor que</option><option value="missing"${c.op === 'missing' ? ' selected' : ''}>sin lectura</option></select>`;
+                const num = c.op === 'missing' ? '<span style="font-size:12px;color:var(--muted)">(sin lectura válida durante más de 1 min)</span>'
+                    : `<input type="number" step="0.5" value="${c.v}" style="width:80px" onchange="ruleSet(${id},'v',parseFloat(this.value))"><span style="font-size:12px;color:var(--muted)">histéresis</span><input type="number" step="0.5" min="0" value="${c.h || 0}" style="width:64px" onchange="ruleSet(${id},'h',parseFloat(this.value))">`;
+                const body = kind === 'bool'
+                    ? sel('a', RULE_VARS.slice(9), c.a, 9) + `<select onchange="ruleSet(${id},'op',this.value)"><option value="true"${c.op === 'true' ? ' selected' : ''}>es sí</option><option value="false"${c.op === 'false' ? ' selected' : ''}>es no</option></select>`
+                    : kind === 'delta'
+                        ? sel('a', PID_SOURCES, c.a, 0) + '<b>−</b>' + sel('b', PID_SOURCES, c.b, 0) + opSel + num
+                        : sel('a', PID_SOURCES, c.a, 0) + opSel + num;
+                return `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:5px 0">${ci ? '<b style="font-size:12px">Y</b>' : ''}${kindSel}${body}<button type="button" class="btn sm grey" onclick="ruleDelCond('${key}',${gi},${ci})">✕</button></div>`;
+            }).join('')}
             ${g.length < RULE_MAX.conds ? `<button type="button" class="btn sm grey" onclick="ruleAddCond('${key}',${gi})">+ condición (Y)</button>` : ''}</div>`).join('');
         return `<div style="margin-bottom:16px"><div style="font-weight:700;font-size:15px">${label}${groups.length ? '' : ' <span style="font-weight:400;color:var(--muted);font-size:12px">— sin reglas: siempre apagado</span>'}</div>${gh}
             ${groups.length < RULE_MAX.groups ? `<button type="button" class="btn sm blue" onclick="ruleAddGroup('${key}')">+ grupo (O)</button>` : ''}</div>`;
     }).join('');
 }
-function ruleSet(k, gi, ci, f, v) { const c = RULES[k][gi][ci]; if (f === 'b') { if (v < 0) delete c.b; else c.b = v; } else c[f] = v; if (f === 'a' && v >= 9) { delete c.b; if (c.op === 'missing') c.op = '>'; }
-    if (f === 'op' && v === 'missing') { c.v = 0; c.h = 0; } renderRules(); }
+function ruleKind(k, gi, ci, kind) {
+    const c = RULES[k][gi][ci];
+    for (const f of ['b', 'v', 'h']) delete c[f];
+    if (kind === 'bool') c.a = 10, c.op = 'true';
+    else if (kind === 'delta') c.a = 0, c.b = 4, c.op = '>', c.v = 5, c.h = 2;
+    else c.a = 0, c.op = '>', c.v = 50, c.h = 2;
+    renderRules();
+}
+function ruleSet(k, gi, ci, f, v) {
+    const c = RULES[k][gi][ci];
+    c[f] = v;
+    if (f === 'op' && (v === 'missing' || v === 'true' || v === 'false')) { delete c.v; delete c.h; }
+    if (f === 'op' && (v === '>' || v === '<') && c.v == null) { c.v = 50; c.h = 2; }
+    renderRules();
+}
 function ruleAddGroup(k) { (RULES[k] = RULES[k] || []).push([{ a: 0, op: '>', v: 50, h: 2 }]); renderRules(); }
 function ruleAddCond(k, gi) { RULES[k][gi].push({ a: 0, op: '>', v: 50, h: 2 }); renderRules(); }
 function ruleDelGroup(k, gi) { RULES[k].splice(gi, 1); renderRules(); }
@@ -1018,7 +1036,7 @@ function loadRules() {
 }
 function saveRules() {
     for (const [k] of RULE_RELAYS) for (const g of RULES[k] || []) for (const c of g)
-        if (c.op !== 'missing' && (typeof c.v !== 'number' || isNaN(c.v) || typeof c.h !== 'number' || isNaN(c.h))) return rulesMsg('Hay un valor no válido en las reglas', 'err');
+        if ((c.op === '>' || c.op === '<') && (typeof c.v !== 'number' || isNaN(c.v) || typeof c.h !== 'number' || isNaN(c.h))) return rulesMsg('Hay un valor no válido en las reglas', 'err');
     api('/api/rules', 'POST', RULES).then(r => {
         if (r.data && r.data.success) rulesMsg(r.data.warning ? 'Aplicado, pero no se pudo guardar en flash' : 'Reglas guardadas', r.data.warning ? 'warn' : 'ok');
         else rulesMsg('Error: ' + ((r.data && r.data.error) || '?'), 'err');

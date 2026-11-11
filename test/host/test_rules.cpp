@@ -54,8 +54,9 @@ static void test_missing_and_diff() {
     CHECK(!ruleEvalCond(latched, v) && !latched.state, "a lost reading turns a latched condition off");
     v[8] = 90;
     CHECK(!ruleEvalCond(latched, v), "after a lost reading it must cross the threshold again (no stale latch)");
-    RuleCond lt = ruleCond(RULE_VAR_BURNING, false, 0.5f);
-    v[RULE_VAR_BURNING] = 0; CHECK(ruleEvalCond(lt, v), "pseudo-variable 'burning' = 0 satisfies '< 0.5'");
+    RuleCond no = ruleCondBool(RULE_VAR_BURNING, false), yes = ruleCondBool(RULE_VAR_BURNING, true);
+    v[RULE_VAR_BURNING] = 0; CHECK(ruleEvalCond(no, v) && !ruleEvalCond(yes, v), "boolean 'burning' = no: 'es no' true, 'es sí' false");
+    v[RULE_VAR_BURNING] = 1; CHECK(!ruleEvalCond(no, v) && ruleEvalCond(yes, v), "boolean 'burning' = yes: 'es sí' true, 'es no' false");
 }
 
 static void test_groups() {
@@ -95,7 +96,13 @@ static void test_missing_operator() {
     RuleSet ok; ruleAddGroup(ok.relay[0], { ruleCondMissing(4) });
     CHECK(!ruleValidate(ok), "'missing' on a temperature validates");
     RuleSet bad; ruleAddGroup(bad.relay[0], { ruleCondMissing(RULE_VAR_BURNING) });
-    CHECK(ruleValidate(bad), "'missing' on a pseudo-variable rejected (it always has a value)");
+    CHECK(ruleValidate(bad), "'missing' on a boolean variable rejected (it always has a value)");
+    RuleSet b2; ruleAddGroup(b2.relay[0], { ruleCond(RULE_VAR_BURNING, true, 0.5f) });
+    CHECK(ruleValidate(b2), "a number comparison on a boolean variable is rejected");
+    RuleSet b3; ruleAddGroup(b3.relay[0], { ruleCondBool(0, true) });
+    CHECK(ruleValidate(b3), "'es sí' on a temperature is rejected");
+    RuleSet b4; ruleAddGroup(b4.relay[0], { ruleCondBool(RULE_VAR_BOILER_PUMP, false) });
+    CHECK(!ruleValidate(b4), "'es no' on a boolean validates");
     // Heating pump default: no floor probe -> runs by the water-hot group, ignoring the delta
     RuleSet rs = ruleDefaults();
     vars(v, 55, 30, 20, 25, NAN, 40, 20, 22, 120, true); v[RULE_VAR_BOILER_PUMP] = 1;
@@ -255,15 +262,18 @@ static void test_json() {
     RuleSet fb; CHECK(!parse(fs, fb) && toStr(fb) == fs, "a completely full rule set round-trips");
     CHECK(fs.size() < 4000 - 100, "a completely full rule set fits the 4000-byte NVS string limit");
 
+    RuleSet bj; CHECK(!parse("{\"fans\":[[{\"a\":10,\"op\":\"true\"},{\"a\":9,\"op\":\"false\"}]]}", bj) && bj.relay[RULE_FANS].g[0].c[0].op == RULE_OP_TRUE && bj.relay[RULE_FANS].g[0].c[1].op == RULE_OP_FALSE, "'true' / 'false' operators parse");
+    CHECK(toStr(bj).find("\"fans\":[[{\"a\":10,\"op\":\"true\"},{\"a\":9,\"op\":\"false\"}]]") != std::string::npos, "booleans serialise without value / hysteresis");
+    RuleSet old; CHECK(!parse("{\"fans\":[[{\"a\":10,\"op\":\">\",\"v\":0.5,\"h\":0}],[{\"a\":9,\"op\":\"<\",\"v\":0.5,\"h\":0}]]}", old) && old.relay[RULE_FANS].g[0].c[0].op == RULE_OP_TRUE && old.relay[RULE_FANS].g[1].c[0].op == RULE_OP_FALSE, "rules saved with the old '> 0.5' form migrate to true / false");
     RuleSet ms; CHECK(!parse("{\"fans\":[[{\"a\":4,\"op\":\"missing\"}]]}", ms) && ms.relay[RULE_FANS].g[0].c[0].op == RULE_OP_MISSING, "'missing' operator parses (no value needed)");
     CHECK(toStr(ms).find("\"fans\":[[{\"a\":4,\"op\":\"missing\"}]]") != std::string::npos, "'missing' serialises without value/hysteresis");
-    CHECK(js.find("\"op\":\"missing\"") != std::string::npos, "default rules include the 'missing' group");
+    CHECK(js.find("\"op\":\"missing\"") != std::string::npos && js.find("0.5") == std::string::npos, "default rules include the 'missing' group and no 0.5 hack");
 
     // Partial update: only the relays present are replaced
     RuleSet p = a;
     CHECK(!parse("{\"fans\":[[{\"a\":0,\"op\":\">\",\"v\":60,\"h\":3}]]}", p), "partial POST with only 'fans' accepted");
     CHECK(p.relay[RULE_FANS].g[0].c[0].a == 0 && p.relay[RULE_FANS].g[0].c[0].value == 60, "fans replaced");
-    CHECK(toStr(p).find("\"boiler_pump\":[[{\"a\":10") != std::string::npos && p.relay[RULE_BOILER_PUMP].n == 3, "other relays untouched");
+    CHECK(toStr(p).find("\"boiler_pump\":[[{\"a\":10,\"op\":\"true\"}") != std::string::npos && p.relay[RULE_BOILER_PUMP].n == 3, "other relays untouched");
     RuleSet cleared = a;
     CHECK(!parse("{\"fans\":[]}", cleared) && cleared.relay[RULE_FANS].n == 0, "empty list clears a relay (always OFF)");
 
@@ -271,7 +281,8 @@ static void test_json() {
     const char* bads[] = {
         "{\"fans\":[[{\"a\":0,\"op\":\"=\",\"v\":1}]]}",              // bad operator
         "{\"fans\":[[{\"a\":0,\"op\":\">\"}]]}",                      // no value
-        "{\"fans\":[[{\"a\":9,\"op\":\"missing\"}]]}",              // missing on a pseudo-variable
+        "{\"fans\":[[{\"a\":9,\"op\":\"missing\"}]]}",              // missing on a boolean variable
+        "{\"fans\":[[{\"a\":0,\"op\":\"true\"}]]}",                 // yes/no on a temperature
         "{\"fans\":[[{\"a\":99,\"op\":\">\",\"v\":1}]]}",             // bad variable
         "{\"fans\":[[{\"a\":0,\"b\":77,\"op\":\">\",\"v\":1}]]}",     // bad second variable
         "{\"fans\":[[{\"op\":\">\",\"v\":1}]]}",                      // no variable
