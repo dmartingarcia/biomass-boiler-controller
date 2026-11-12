@@ -541,7 +541,9 @@ function applyStatus(d) {
     for (const [key, base] of Object.entries(RELAYS)) {
         const on = d[key], want = d[key + '_desired'];
         setPill('s-' + base, on);
-        const p = $('p-' + base); if (p) p.style.display = (on !== want && !d.manual_mode) ? 'inline' : 'none';
+        const p = $('p-' + base);
+        if (p) { const pend = on !== want && !d.manual_mode; p.style.display = pend ? 'inline' : 'none';
+            if (pend) { const sec = d[key + '_pending_s'] || 0; p.textContent = '(pasando a ' + (want ? 'ON' : 'OFF') + (sec ? ' en ' + (sec >= 60 ? Math.floor(sec / 60) + ' min ' + (sec % 60) + ' s' : sec + ' s') : ' ahora') + ')'; } }
         const sw = $('sw-' + base);
         if (sw && !sw.classList.contains('busy')) sw.querySelector('input').checked = on;
     }

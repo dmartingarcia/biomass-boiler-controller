@@ -754,12 +754,16 @@ void setup() {
         if (!isnan(burningTemp)) doc["burning_temp"] = burningTemp; else doc["burning_temp"] = nullptr;
         doc["boiler_pump"]         = boilerPumpRelay.getState();
         doc["boiler_pump_desired"] = boilerPumpRelay.getDesiredState();
+        doc["boiler_pump_pending_s"]  = boilerPumpRelay.pendingSeconds();
         doc["heating_pump"]        = heatingPumpRelay.getState();
         doc["heating_pump_desired"]= heatingPumpRelay.getDesiredState();
+        doc["heating_pump_pending_s"]  = heatingPumpRelay.pendingSeconds();
         doc["fans"]                = fansRelay.getState();
         doc["fans_desired"]        = fansRelay.getDesiredState();
+        doc["fans_pending_s"]  = fansRelay.pendingSeconds();
         doc["other"]               = otherRelay.getState();
         doc["other_desired"]       = otherRelay.getDesiredState();
+        doc["other_pending_s"]  = otherRelay.pendingSeconds();
         doc["target_burning_temp"] = airIntake.getTargetTemperature();
         doc["air_intake"] = airIntake.getCurrentOutput();
         doc["auto_tuning"] = airIntake.isAutoTuning();

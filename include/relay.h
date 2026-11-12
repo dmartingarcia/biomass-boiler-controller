@@ -42,6 +42,13 @@ public:
         return false;
     }
 
+    // Seconds until a pending change is applied (0 if none pending / ready now)
+    unsigned long pendingSeconds() const {
+        if (desiredState == state || !initialized) return 0;
+        unsigned long el = millis() - lastChangeTime;
+        return el >= debounceMs ? 0 : (debounceMs - el + 999) / 1000;
+    }
+
     // Re-assign the output pin. setPin() before begin(); rebind()+reapply() at runtime
     // (caller must drive every old pin LOW first so two relays never share a pin).
     void setPin(uint8_t p) { pin = p; }
