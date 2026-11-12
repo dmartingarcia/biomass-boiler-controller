@@ -542,8 +542,10 @@ function applyStatus(d) {
         const on = d[key], want = d[key + '_desired'];
         setPill('s-' + base, on);
         const p = $('p-' + base);
-        if (p) { const pend = on !== want && !d.manual_mode; p.style.display = pend ? 'inline' : 'none';
-            if (pend) { const sec = d[key + '_pending_s'] || 0; p.textContent = '(pasando a ' + (want ? 'ON' : 'OFF') + (sec ? ' en ' + (sec >= 60 ? Math.floor(sec / 60) + ' min ' + (sec % 60) + ' s' : sec + ' s') : ' ahora') + ')'; } }
+        if (p) { const pend = on !== want && !d.manual_mode, lock = d.manual_mode ? 0 : (d[key + '_lock_s'] || 0);
+            const t = sec => sec >= 60 ? Math.floor(sec / 60) + ' min ' + (sec % 60) + ' s' : sec + ' s';
+            p.style.display = (pend || lock) ? 'inline' : 'none';
+            p.textContent = pend ? '(pasando a ' + (want ? 'ON' : 'OFF') + (lock ? ' en ' + t(lock) : ' ahora') + ')' : '(debounce: ' + t(lock) + ')'; }
         const sw = $('sw-' + base);
         if (sw && !sw.classList.contains('busy')) sw.querySelector('input').checked = on;
     }
