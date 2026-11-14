@@ -140,6 +140,6 @@
 #define MQTT_PASSWORD                  "homeassistant"
 #define MQTT_BASE_TOPIC                "lumber-boiler"
 #define MQTT_CLIENT_ID                 "lumber-boiler-manager"
-#define MQTT_PUBLISH_INTERVAL          10000
+#define MQTT_PUBLISH_INTERVAL          10000   // default ms; runtime-configurable (mqttIntervalSec)
 
 #endif // CONFIG_H

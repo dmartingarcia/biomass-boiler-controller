@@ -739,7 +739,7 @@ void setup() {
         // Create JSON response with current system state
         AsyncResponseStream *response = request->beginResponseStream("application/json");
 
-        StaticJsonDocument<1280> doc;
+        StaticJsonDocument<1536> doc;
         auto setTemp = [&](const char* key, float v) {
             if (TemperatureSensors::isValidDallasTemp(v)) doc[key] = v; else doc[key] = nullptr;
         };
@@ -752,6 +752,13 @@ void setup() {
         setTemp("floor_return",  floorReturnTemp);
         setTemp("boiler_return", boilerReturnTemp);
         if (!isnan(burningTemp)) doc["burning_temp"] = burningTemp; else doc["burning_temp"] = nullptr;
+        {   // combustion detection (with hysteresis) — the UI explains when it will switch
+            float bv = sourceTemp(systemSettings.burnSource);
+            if (!isnan(bv)) doc["burn_value"] = bv; else doc["burn_value"] = nullptr;
+            doc["burning"]     = isBurning;
+            doc["burn_thresh"] = systemSettings.burningTempThreshold;
+            doc["burn_hyst"]   = systemSettings.burningHysteresis;
+        }
         doc["boiler_pump"]         = boilerPumpRelay.getState();
         doc["boiler_pump_desired"] = boilerPumpRelay.getDesiredState();
         doc["boiler_pump_pending_s"]  = boilerPumpRelay.pendingSeconds();
@@ -1059,6 +1066,7 @@ void setup() {
 
         JsonObject s = doc.createNestedObject("settings");
         s["burning_temp_threshold"] = systemSettings.burningTempThreshold;
+        s["burning_hysteresis"]     = systemSettings.burningHysteresis;
         s["boiler_water_threshold"] = systemSettings.boilerWaterTempThreshold;
         s["boiler_water_critical"]  = systemSettings.boilerWaterCriticalTemp;
         s["target_burning_temp"]    = systemSettings.targetBurningTemp;
@@ -1069,6 +1077,7 @@ void setup() {
         s["servo_min"]              = systemSettings.servoMin;
         s["servo_max"]              = systemSettings.servoMax;
         s["relay_debounce_min"]     = systemSettings.relayDebounceMin;
+        s["mqtt_interval_s"]        = systemSettings.mqttIntervalSec;
         s["boiler_iron_threshold"]  = systemSettings.boilerIronThreshold;
         s["floor_delta_threshold"]  = systemSettings.floorDeltaThreshold;
         s["fan_on_temp"]            = systemSettings.fanOnTemp;
@@ -1118,6 +1127,7 @@ void setup() {
                 RuntimeSettings backup = systemSettings;
                 JsonObjectConst s = doc["settings"].as<JsonObjectConst>();
                 if (s.containsKey("burning_temp_threshold")) systemSettings.burningTempThreshold    = s["burning_temp_threshold"];
+                if (s.containsKey("burning_hysteresis"))     systemSettings.burningHysteresis    = s["burning_hysteresis"];
                 if (s.containsKey("boiler_water_threshold")) systemSettings.boilerWaterTempThreshold = s["boiler_water_threshold"];
                 if (s.containsKey("boiler_water_critical"))  systemSettings.boilerWaterCriticalTemp  = s["boiler_water_critical"];
                 if (s.containsKey("target_burning_temp"))    systemSettings.targetBurningTemp        = s["target_burning_temp"];
@@ -1128,6 +1138,7 @@ void setup() {
                 if (s.containsKey("pid_kp"))   systemSettings.pidKp = s["pid_kp"];
                 if (s.containsKey("pid_ki"))   systemSettings.pidKi = s["pid_ki"];
                 if (s.containsKey("pid_kd"))   systemSettings.pidKd = s["pid_kd"];
+                if (s.containsKey("mqtt_interval_s"))    systemSettings.mqttIntervalSec      = s["mqtt_interval_s"];
                 if (s.containsKey("servo_min"))          systemSettings.servoMin             = s["servo_min"];
                 if (s.containsKey("servo_max"))          systemSettings.servoMax             = s["servo_max"];
                 if (s.containsKey("relay_debounce_min")) {
@@ -1342,8 +1353,9 @@ void setup() {
     // GET /api/config — return all runtime-configurable settings
     webServer.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
         AsyncResponseStream *response = request->beginResponseStream("application/json");
-        StaticJsonDocument<1536> doc;
+        StaticJsonDocument<1792> doc;
         doc["burning_temp_threshold"] = systemSettings.burningTempThreshold;
+        doc["burning_hysteresis"]     = systemSettings.burningHysteresis;
         doc["boiler_water_threshold"] = systemSettings.boilerWaterTempThreshold;
         doc["boiler_water_critical"]  = systemSettings.boilerWaterCriticalTemp;
         doc["target_burning_temp"]    = systemSettings.targetBurningTemp;
@@ -1354,6 +1366,7 @@ void setup() {
         doc["servo_min"]              = systemSettings.servoMin;
         doc["servo_max"]              = systemSettings.servoMax;
         doc["relay_debounce_min"]     = systemSettings.relayDebounceMin;
+        doc["mqtt_interval_s"]        = systemSettings.mqttIntervalSec;
         doc["boiler_iron_threshold"]  = systemSettings.boilerIronThreshold;
         doc["floor_delta_threshold"]  = systemSettings.floorDeltaThreshold;
         doc["fan_on_temp"]            = systemSettings.fanOnTemp;
@@ -1375,6 +1388,7 @@ void setup() {
         // Include compile-time defaults for reference in the UI
         JsonObject defaults = doc.createNestedObject("defaults");
         defaults["burning_temp_threshold"] = BURNING_TEMP_THRESHOLD;
+        defaults["burning_hysteresis"]     = BURNING_HYSTERESIS;
         defaults["boiler_water_threshold"] = BOILER_WATER_TEMP_THRESHOLD;
         defaults["boiler_water_critical"]  = BOILER_WATER_CRITICAL_TEMP;
         defaults["target_burning_temp"]    = DEFAULT_TARGET_BURNING_TEMP;
@@ -1385,6 +1399,7 @@ void setup() {
         defaults["servo_min"]              = DEFAULT_SERVO_MIN;
         defaults["servo_max"]              = DEFAULT_SERVO_MAX;
         defaults["relay_debounce_min"]     = RELAY_DEBOUNCE_MIN;
+        defaults["mqtt_interval_s"]        = MQTT_PUBLISH_INTERVAL / 1000;
         defaults["boiler_iron_threshold"]  = BOILER_IRON_PUMP_THRESHOLD;
         defaults["floor_delta_threshold"]  = FLOOR_DELTA_THRESHOLD;
         defaults["fan_on_temp"]            = FAN_ON_TEMP;
@@ -1420,6 +1435,8 @@ void setup() {
             // Update only the fields present in the request
             if (doc.containsKey("burning_temp_threshold"))
                 next.burningTempThreshold    = doc["burning_temp_threshold"];
+            if (doc.containsKey("burning_hysteresis"))
+                next.burningHysteresis       = doc["burning_hysteresis"];
             if (doc.containsKey("boiler_water_threshold"))
                 next.boilerWaterTempThreshold = doc["boiler_water_threshold"];
             if (doc.containsKey("boiler_water_critical"))
@@ -1433,6 +1450,7 @@ void setup() {
             if (doc.containsKey("servo_min")) next.servoMin = doc["servo_min"];
             if (doc.containsKey("servo_max")) next.servoMax = doc["servo_max"];
             if (doc.containsKey("relay_debounce_min")) next.relayDebounceMin = doc["relay_debounce_min"];
+            if (doc.containsKey("mqtt_interval_s")) next.mqttIntervalSec = doc["mqtt_interval_s"];
             if (doc.containsKey("boiler_iron_threshold"))
                 next.boilerIronThreshold = doc["boiler_iron_threshold"];
             if (doc.containsKey("floor_delta_threshold"))
@@ -1964,7 +1982,7 @@ void loop() {
         float burnT = sourceTemp(systemSettings.burnSource);
         if (isnan(burnT))                                                   isBurning = false;
         else if (burnT > systemSettings.burningTempThreshold)               isBurning = true;
-        else if (burnT < systemSettings.burningTempThreshold - BURNING_HYSTERESIS) isBurning = false;
+        else if (burnT < systemSettings.burningTempThreshold - systemSettings.burningHysteresis) isBurning = false;
         bool isBoilerWaterCritical = sensors.isBoilerWaterCritical();
 
         // Boiler-supply sensor watchdog (only if a sensor is actually assigned to that role)
@@ -2075,8 +2093,8 @@ void loop() {
     // MQTT keepalive + incoming message processing (every loop iteration)
     homeAssistant.tick();
 
-    // Publish to MQTT every 10 seconds
-    if (currentMillis - lastMqttUpdate >= MQTT_PUBLISH_INTERVAL) {
+    // Publish to MQTT every mqttIntervalSec seconds (configurable)
+    if (currentMillis - lastMqttUpdate >= (unsigned long)systemSettings.mqttIntervalSec * 1000UL) {
         lastMqttUpdate = currentMillis;
         updateHomeAssistant();
     }

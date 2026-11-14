@@ -141,6 +141,7 @@ private:
         if (WiFi.status() != WL_CONNECTED) return false;
 
         mqttClient.setServer(server, port);
+        mqttClient.setBufferSize(1024);  // default 256 B is smaller than the state JSON / discovery payloads → publish silently fails
         Serial.printf("[MQTT] Connecting to %s:%u ...\n", server, port);
 
         if (mqttClient.connect(clientId, user, password)) {

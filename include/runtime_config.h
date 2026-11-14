@@ -14,6 +14,7 @@
 // On first boot after migration, any existing LittleFS JSON is imported automatically.
 struct RuntimeSettings {
     float    burningTempThreshold;
+    float    burningHysteresis;
     float    boilerWaterTempThreshold;
     float    boilerWaterCriticalTemp;
     float    targetBurningTemp;
@@ -33,9 +34,11 @@ struct RuntimeSettings {
     char     mqttUser[32];
     char     mqttPassword[64];
     char     mqttBaseTopic[32];
+    uint16_t mqttIntervalSec;
 
     RuntimeSettings() {
         burningTempThreshold     = BURNING_TEMP_THRESHOLD;
+        burningHysteresis        = BURNING_HYSTERESIS;
         boilerWaterTempThreshold = BOILER_WATER_TEMP_THRESHOLD;
         boilerWaterCriticalTemp  = BOILER_WATER_CRITICAL_TEMP;
         targetBurningTemp        = DEFAULT_TARGET_BURNING_TEMP;
@@ -53,6 +56,7 @@ struct RuntimeSettings {
         ironSource = DEFAULT_IRON_SOURCE; waterSource = DEFAULT_WATER_SOURCE;
         strlcpy(mqttServer,    MQTT_SERVER,     sizeof(mqttServer));
         mqttPort = MQTT_PORT;
+        mqttIntervalSec = MQTT_PUBLISH_INTERVAL / 1000;
         strlcpy(mqttUser,      MQTT_USER,       sizeof(mqttUser));
         strlcpy(mqttPassword,  MQTT_PASSWORD,   sizeof(mqttPassword));
         strlcpy(mqttBaseTopic, MQTT_BASE_TOPIC, sizeof(mqttBaseTopic));
@@ -65,6 +69,7 @@ struct RuntimeSettings {
             if (prefs.isKey("v")) {
                 migrate = prefs.getUChar("v", 1) < 2;
                 burningTempThreshold     = prefs.getFloat("burn_thresh",  burningTempThreshold);
+                burningHysteresis        = prefs.getFloat("burn_hyst",    burningHysteresis);
                 boilerWaterTempThreshold = prefs.getFloat("water_thresh", boilerWaterTempThreshold);
                 boilerWaterCriticalTemp  = prefs.getFloat("water_crit",   boilerWaterCriticalTemp);
                 targetBurningTemp        = prefs.getFloat("target_burn",  targetBurningTemp);
@@ -84,6 +89,7 @@ struct RuntimeSettings {
                 ironSource               = prefs.getInt("src_iron",       ironSource);
                 waterSource              = prefs.getInt("src_water",      waterSource);
                 mqttPort                 = prefs.getUShort("mqtt_port",   mqttPort);
+                mqttIntervalSec          = prefs.getUShort("mqtt_int",    mqttIntervalSec);
                 if (prefs.isKey("mqtt_server")) prefs.getString("mqtt_server", mqttServer,    sizeof(mqttServer));
                 if (prefs.isKey("mqtt_user"))   prefs.getString("mqtt_user",   mqttUser,      sizeof(mqttUser));
                 if (prefs.isKey("mqtt_pass"))   prefs.getString("mqtt_pass",   mqttPassword,  sizeof(mqttPassword));
@@ -113,6 +119,7 @@ struct RuntimeSettings {
         if (!prefs.begin(RUNTIME_PREFS_NS, false)) return false;
         prefs.putUChar("v", 2);
         prefs.putFloat("burn_thresh",  burningTempThreshold);
+        prefs.putFloat("burn_hyst",    burningHysteresis);
         prefs.putFloat("water_thresh", boilerWaterTempThreshold);
         prefs.putFloat("water_crit",   boilerWaterCriticalTemp);
         prefs.putFloat("target_burn",  targetBurningTemp);
@@ -132,6 +139,7 @@ struct RuntimeSettings {
         prefs.putInt("src_water",      waterSource);
         prefs.putString("mqtt_server", mqttServer);
         prefs.putUShort("mqtt_port",   mqttPort);
+        prefs.putUShort("mqtt_int",    mqttIntervalSec);
         prefs.putString("mqtt_user",   mqttUser);
         prefs.putString("mqtt_pass",   mqttPassword);
         prefs.putString("mqtt_topic",  mqttBaseTopic);
@@ -144,7 +152,7 @@ struct RuntimeSettings {
         auto bad = [](float v) { return isnan(v) || isinf(v); };
         if (bad(burningTempThreshold) || bad(boilerWaterTempThreshold) || bad(boilerWaterCriticalTemp) ||
             bad(targetBurningTemp) || bad(pidKp) || bad(pidKi) || bad(pidKd) ||
-            bad(boilerIronThreshold) || bad(floorDeltaThreshold) || bad(fanOnTemp))
+            bad(boilerIronThreshold) || bad(floorDeltaThreshold) || bad(fanOnTemp) || bad(burningHysteresis))
             return "Algún valor no es un número";
         if (boilerWaterCriticalTemp <= boilerWaterTempThreshold)
             return "«Agua crítica» debe ser mayor que «Agua caliente»";
@@ -152,6 +160,8 @@ struct RuntimeSettings {
             return "«Agua crítica» debe ser menor que el máximo válido del sensor (120 °C)";
         if (burningTempThreshold < 0 || burningTempThreshold > 1000)
             return "Detección de combustión fuera de rango (0–1000 °C)";
+        if (burningHysteresis < 0 || burningHysteresis > 100)
+            return "Histéresis de combustión fuera de rango (0–100 °C)";
         if (targetBurningTemp < TARGET_TEMP_MIN || targetBurningTemp > TARGET_TEMP_MAX)
             return "Objetivo del PID fuera de rango";
         if (pidSource < 0 || pidSource > 8)
@@ -173,6 +183,8 @@ struct RuntimeSettings {
             return "Temperatura de ventiladores fuera de rango (30–300 °C)";
         if (mqttPort == 0)
             return "Puerto MQTT no válido";
+        if (mqttIntervalSec < 1 || mqttIntervalSec > 3600)
+            return "Intervalo MQTT fuera de rango (1–3600 s)";
         return nullptr;
     }
 

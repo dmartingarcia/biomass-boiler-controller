@@ -197,7 +197,7 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
 <section class="page active" id="page-dashboard">
     <div class="grid g-hero" style="margin-bottom:14px">
         <div class="tile hero hot"><div class="lbl">Ida caldera</div><div class="val" id="h-supply">--</div></div>
-        <div class="tile hero"><div class="lbl">Gases combustión</div><div class="val" id="h-burn">--</div></div>
+        <div class="tile hero"><div class="lbl">Gases combustión</div><div class="val" id="h-burn">--</div><div id="h-burn-state" style="font-size:12px;color:var(--muted);margin-top:4px"></div></div>
         <div class="tile hero"><div class="lbl" id="h-target-lbl">Control del aire (PID)</div><div class="val" id="h-target">--</div></div>
         <div class="tile hero"><div class="lbl">Entrada de aire</div><div class="val" id="h-air">--</div><div class="bar"><i id="h-airbar"></i></div></div>
     </div>
@@ -277,13 +277,15 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
     </div>
 
     <div class="card">
-        <h2>Lectura en vivo</h2>
-        <div class="grid g-temps">
-            <div class="tile"><div class="lbl">Ida caldera</div><div class="val" id="m-supply">--</div></div>
-            <div class="tile"><div class="lbl">Gases combustión</div><div class="val" id="m-burn">--</div></div>
-            <div class="tile"><div class="lbl">Hierro caldera</div><div class="val" id="m-iron">--</div></div>
-            <div class="tile"><div class="lbl">Retorno suelo</div><div class="val" id="m-floor">--</div></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+            <h2 style="margin:0">Lectura en vivo</h2>
+            <div class="seg" id="live-sort">
+                <button type="button" data-sort="def" class="active">Por defecto</button>
+                <button type="button" data-sort="name">Nombre</button>
+                <button type="button" data-sort="temp">Temperatura</button>
+            </div>
         </div>
+        <div id="live-list"></div>
     </div>
 </section>
 
@@ -331,9 +333,11 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
     <div class="card">
         <h2>Detección de combustión</h2>
         <div class="frow"><label>Variable<small>Temperatura que decide si hay fuego</small></label><select id="cfg-burn-src"></select></div>
-        <div class="frow"><label>«Quemando» por encima de<small>Termopar de gases. Se da por apagado 5 °C por debajo (histéresis). Activa el PID y la bomba de caldera</small></label>
+        <div class="frow"><label>«Quemando» por encima de<small>Se da por encendido al superar este valor. Activa el PID y la bomba de caldera</small></label>
             <input type="range" id="cfg-burn-thresh" min="30" max="300" step="1" oninput="sv(this)">
             <span class="val"><span id="cfg-burn-thresh-val">--</span> °C</span></div>
+        <div class="frow"><label>Histéresis (°C)<small>Se da por apagado cuando baja de «umbral − histéresis». Entre ambos valores mantiene el estado que tenía (evita que conmute sin parar)</small></label><input type="number" id="cfg-burn-hyst" min="0" max="100" step="0.5"></div>
+        <div class="msg" id="cfg-burn-hyst-info" style="display:block"></div>
     </div>
 
     <div class="card" id="rules-card">
@@ -380,6 +384,7 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
     <div class="card">
         <h2>Tiempos</h2>
         <div class="frow"><label>Debounce de relés (min)<small>Tiempo mínimo entre cambios en automático</small></label><input type="number" id="cfg-debounce" min="0" max="60"></div>
+        <div class="frow"><label>Intervalo MQTT (s)<small>Cada cuánto se publica el estado (1–3600)</small></label><input type="number" id="cfg-mqtt-int" min="1" max="3600"></div>
     </div>
 
     <div class="card">
@@ -523,6 +528,28 @@ let servoDragging = false, servoBusy = false;
 
 const RELAYS = { boiler_pump: 'boiler-pump', heating_pump: 'heating-pump', fans: 'fans', other: 'other' };
 
+
+/* ── Manual: live temperature list (sortable) ──────────────────── */
+// Default order: along the water path — boiler, flue gas, floor circuit, mix, ambient
+const LIVE_TEMPS = [['Ida caldera', 'boiler_supply'], ['Retorno caldera', 'boiler_return'], ['Hierro caldera', 'boiler_iron'],
+    ['Gases combustión', 'burning_temp'], ['Ida suelo', 'floor_supply'], ['Retorno suelo', 'floor_return'],
+    ['Ida mezcla', 'mix_supply'], ['Ambiente abajo', 'ambient_low'], ['Ambiente arriba', 'ambient_high']];
+let liveSort = 'def';
+try { liveSort = localStorage.getItem('liveSort') || 'def'; } catch (e) {}
+function renderLiveList() {
+    const el = $('live-list'); if (!el || !ST) return;
+    const rows = LIVE_TEMPS.map(([name, key], i) => ({ name, i, v: ST[key] == null || isNaN(ST[key]) ? null : Number(ST[key]) }));
+    if (liveSort === 'name') rows.sort((a, b) => a.name.localeCompare(b.name, 'es'));
+    else if (liveSort === 'temp') rows.sort((a, b) => (a.v == null) - (b.v == null) || (b.v - a.v));
+    el.innerHTML = rows.map(r => '<div class="frow" style="justify-content:space-between"><span>' + r.name + '</span><b'
+        + (r.v == null ? ' style="color:var(--err)">ERR' : ' style="font-size:17px">' + r.v.toFixed(1) + ' °C') + '</b></div>').join('');
+    document.querySelectorAll('#live-sort button').forEach(b => b.classList.toggle('active', b.dataset.sort === liveSort));
+}
+document.querySelectorAll('#live-sort button').forEach(b => b.addEventListener('click', () => {
+    liveSort = b.dataset.sort; try { localStorage.setItem('liveSort', liveSort); } catch (e) {}
+    renderLiveList();
+}));
+
 function applyStatus(d) {
     ST = d;
     setTemp('t-boiler-supply', d.boiler_supply); setTemp('t-boiler-return', d.boiler_return);
@@ -530,11 +557,23 @@ function applyStatus(d) {
     setTemp('t-floor-return', d.floor_return);   setTemp('t-mix-supply', d.mix_supply);
     setTemp('t-ambient-low', d.ambient_low);     setTemp('t-ambient-high', d.ambient_high);
     setTemp('h-supply', d.boiler_supply); setTemp('h-burn', d.burning_temp);
-    setTemp('m-supply', d.boiler_supply); setTemp('m-burn', d.burning_temp);
-    setTemp('m-iron', d.boiler_iron);     setTemp('m-floor', d.floor_return);
     { const si = d.pid_source != null ? d.pid_source : 0, name = PID_SOURCES[si] || '';
       $('h-target-lbl').textContent = 'PID aire · ' + name.replace(' (termopar)', '');
       $('h-target').innerHTML = (d.pid_value != null ? fmt(d.pid_value, 1) : 'ERR') + ' → ' + fmt(d.target_burning_temp, 0) + '<small>°C</small>'; }
+    { const el = $('h-burn-state');
+      if (d.burn_thresh != null) {
+        const lo = d.burn_thresh - d.burn_hyst, v = d.burn_value, f = x => fmt(x, 1) + ' °C';
+        let txt;
+        if (v == null) txt = 'Sin lectura · apagado';
+        else if (d.burning) txt = v < d.burn_thresh
+            ? 'ENCENDIDO · en histéresis (' + f(lo) + ' – ' + f(d.burn_thresh) + ') · se apaga al bajar de ' + f(lo) + ' (faltan ' + fmt(v - lo, 1) + ' °C)'
+            : 'ENCENDIDO · se apagará al bajar de ' + f(lo) + ' (faltan ' + fmt(v - lo, 1) + ' °C)';
+        else txt = v > lo
+            ? 'APAGADO · en histéresis (' + f(lo) + ' – ' + f(d.burn_thresh) + ') · se enciende al superar ' + f(d.burn_thresh) + ' (faltan ' + fmt(d.burn_thresh - v, 1) + ' °C)'
+            : 'APAGADO · se enciende al superar ' + f(d.burn_thresh) + ' (faltan ' + fmt(d.burn_thresh - v, 1) + ' °C)';
+        el.textContent = txt;
+      } }
+    renderLiveList();
     $('h-air').innerHTML = d.air_intake + '<small>%</small>';
     $('h-airbar').style.width = d.air_intake + '%';
 
@@ -974,16 +1013,24 @@ function fillConfig(cfg) {
     setField('cfg-pid-source', cfg.pid_source != null ? cfg.pid_source : 0);
     setField('cfg-target-temp', cfg.target_burning_temp); setField('cfg-target-val', cfg.target_burning_temp, true);
     setField('cfg-burn-thresh', cfg.burning_temp_threshold); setField('cfg-water-crit', cfg.boiler_water_critical);
-    setField('cfg-burn-src', cfg.burn_source);
+    setField('cfg-burn-src', cfg.burn_source); setField('cfg-burn-hyst', cfg.burning_hysteresis);
     ['cfg-burn-thresh','cfg-water-crit'].forEach(id => sv($(id)));
     setField('cfg-kp', cfg.pid_kp); setField('cfg-ki', cfg.pid_ki); setField('cfg-kd', cfg.pid_kd);
     setField('cfg-servo-min', cfg.servo_min); setField('cfg-servo-max', cfg.servo_max);
     setField('cfg-debounce', cfg.relay_debounce_min);
+    setField('cfg-mqtt-int', cfg.mqtt_interval_s);
     setField('cfg-mqtt-server', cfg.mqtt_server); setField('cfg-mqtt-port', cfg.mqtt_port);
     setField('cfg-mqtt-user', cfg.mqtt_user); setField('cfg-mqtt-topic', cfg.mqtt_base_topic);
     updatePidWarn();
 }
-function sv(el) { const v = $(el.id + '-val'); if (v) v.textContent = el.value; if (el.id === 'cfg-burn-thresh') updatePidWarn(); }
+function updateHystInfo() {
+    const el = $('cfg-burn-hyst-info'), t = parseFloat($('cfg-burn-thresh').value), h = parseFloat($('cfg-burn-hyst').value);
+    if (isNaN(t) || isNaN(h)) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.textContent = 'Se enciende por encima de ' + t + ' °C y se apaga por debajo de ' + (t - h) + ' °C. Entre ' + (t - h) + ' y ' + t + ' °C no cambia de estado.';
+}
+$('cfg-burn-hyst').addEventListener('input', updateHystInfo);
+function sv(el) { const v = $(el.id + '-val'); if (v) v.textContent = el.value; if (el.id === 'cfg-burn-thresh') { updatePidWarn(); updateHystInfo(); } }
 function updatePidWarn() {
     const w = $('cfg-pid-warn'), src = parseInt($('cfg-pid-source').value), tgt = parseFloat($('cfg-target-temp').value), thr = parseFloat($('cfg-burn-thresh').value);
     if (src === 8 && !isNaN(thr) && tgt <= thr) {
@@ -1146,16 +1193,17 @@ function showMsg(msg, kind) {
 function saveConfig() {
     const n = id => parseFloat($(id).value), i = id => parseInt($(id).value);
     const body = {
-        target_burning_temp: n('cfg-target-temp'), pid_source: i('cfg-pid-source'), burning_temp_threshold: n('cfg-burn-thresh'),
+        target_burning_temp: n('cfg-target-temp'), pid_source: i('cfg-pid-source'), burning_temp_threshold: n('cfg-burn-thresh'), burning_hysteresis: n('cfg-burn-hyst'),
         boiler_water_critical: n('cfg-water-crit'), burn_source: i('cfg-burn-src'),
         pid_kp: n('cfg-kp'), pid_ki: n('cfg-ki'), pid_kd: n('cfg-kd'),
-        servo_min: i('cfg-servo-min'), servo_max: i('cfg-servo-max'), relay_debounce_min: i('cfg-debounce'),
+        servo_min: i('cfg-servo-min'), servo_max: i('cfg-servo-max'), relay_debounce_min: i('cfg-debounce'), mqtt_interval_s: i('cfg-mqtt-int'),
         mqtt_server: $('cfg-mqtt-server').value, mqtt_port: i('cfg-mqtt-port'),
         mqtt_user: $('cfg-mqtt-user').value, mqtt_base_topic: $('cfg-mqtt-topic').value,
     };
     // Basic validation before touching the boiler
     for (const [k, v] of Object.entries(body)) if (typeof v === 'number' && isNaN(v)) return showMsg('Valor no válido en «' + k + '»', 'err');
     if (body.servo_min >= body.servo_max || body.servo_min < 0 || body.servo_max > 180) return showMsg('Rango de servo no válido (0–180, mín < máx)', 'err');
+    if (body.burning_hysteresis < 0 || body.burning_hysteresis > 100) return showMsg('Histéresis fuera de rango (0–100 °C)', 'err');
     if (body.relay_debounce_min < 0 || body.relay_debounce_min > 60) return showMsg('Debounce fuera de rango (0–60 min)', 'err');
     const pass = $('cfg-mqtt-pass').value; if (pass) body.mqtt_password = pass;
     api('/api/config', 'POST', body).then(r => {
