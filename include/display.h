@@ -8,12 +8,13 @@
 #include "config.h"
 
 #ifdef OLED_TYPE_SH1106
-  #define _U8G2_TYPE U8G2_SH1106_128X64_NONAME_F_SW_I2C
+  #define _U8G2_TYPE U8G2_SH1106_128X64_NONAME_F_HW_I2C
 #else
-  #define _U8G2_TYPE U8G2_SSD1306_128X64_NONAME_F_SW_I2C
+  #define _U8G2_TYPE U8G2_SSD1306_128X64_NONAME_F_HW_I2C
 #endif
 
-// OLED over software I2C on custom SDA/SCL pins.
+// OLED over the hardware I2C peripheral (Wire) on custom SDA/SCL pins (ESP32 routes it through the
+// GPIO matrix). The previous bit-banged version blocked loop() for a long time on every redraw.
 // If nothing shows, try defining OLED_TYPE_SH1106 in config.h
 class Display {
 public:
@@ -22,13 +23,14 @@ public:
         SCREEN_NETWORK_INFO
     };
 
-    Display() : u8g2(U8G2_R0, OLED_SCL, OLED_SDA, U8X8_PIN_NONE), available(false) {
+    Display() : u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_SCL, OLED_SDA), available(false) {
         currentScreen = SCREEN_MAIN;
-        lastScreenToggle = 0;
-        screenToggleInterval = 5000;
+        cyclesOnScreen = 0;
+        screenToggleCycles = 3;
     }
 
     void begin() {
+        u8g2.setBusClock(400000);   // SSD1306/SH1106 handle 400 kHz: a full 1 KB frame takes ~25 ms
         available = u8g2.begin();
         if (!available) return;
 
@@ -62,9 +64,9 @@ public:
     void update(float boilerSupplyTemp, float floorSupplyTemp, float burningTemp, float ambientLowTemp,
                 bool boilerPump, bool heatingPump, bool fans, float targetBurningTemp, int airIntakePosition) {
         if (!available) return;
-        unsigned long now = millis();
-        if (now - lastScreenToggle >= screenToggleInterval) {
-            lastScreenToggle = now;
+        // Switch screens every screenToggleCycles redraws (update() runs at a fixed cadence)
+        if (++cyclesOnScreen > screenToggleCycles) {
+            cyclesOnScreen = 1;
             currentScreen = (currentScreen == SCREEN_MAIN) ? SCREEN_NETWORK_INFO : SCREEN_MAIN;
         }
 
@@ -79,11 +81,11 @@ public:
 
     void setScreen(ScreenType screen) {
         currentScreen = screen;
-        lastScreenToggle = millis();
+        cyclesOnScreen = 0;
     }
 
-    void setScreenToggleInterval(unsigned long interval) {
-        screenToggleInterval = interval;
+    void setScreenToggleCycles(unsigned int cycles) {
+        screenToggleCycles = cycles;
     }
 
     bool isAvailable() { return available; }
@@ -159,8 +161,8 @@ private:
     _U8G2_TYPE u8g2;
     bool available;
     ScreenType currentScreen;
-    unsigned long lastScreenToggle;
-    unsigned long screenToggleInterval;
+    unsigned int cyclesOnScreen;
+    unsigned int screenToggleCycles;
 };
 
 #endif // DISPLAY_H

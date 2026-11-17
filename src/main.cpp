@@ -56,6 +56,7 @@ HomeAssistant homeAssistant(wifiClient);
 
 // Variables to manage updates and timing
 unsigned long lastDisplayUpdate = 0;
+#define DISPLAY_UPDATE_MS 2000   // the OLED is bit-banged I2C: each redraw blocks loop() for a while, so refresh it rarely
 unsigned long lastMqttUpdate = 0;
 unsigned long lastSensorRead = 0;
 unsigned long lastControlUpdate = 0;
@@ -629,6 +630,12 @@ void onAPModeStarted() {
 static uint32_t lpLastUs = 0, lpSumUs = 0, lpMaxUs = 0, lpN = 0;
 static unsigned long lpWindowStart = 0;
 static volatile uint32_t loopAvgUs = 0, loopMaxUs = 0;
+// Longest time spent in each part of loop() during the last window (µs), to find what blocks it
+enum { LS_NET, LS_RELAYS, LS_SENSORS, LS_CONTROL, LS_HISTORY, LS_PID, LS_DISPLAY, LS_MQTT, LS_COUNT };
+static const char* const LS_NAMES[LS_COUNT] = { "net", "relays", "sensors", "control", "history", "pid", "display", "mqtt" };
+static uint32_t lsMax[LS_COUNT] = {0}, lsPub[LS_COUNT] = {0};
+static uint32_t lsT = 0;
+static inline void lsLap(int i) { uint32_t n = micros(); if (n - lsT > lsMax[i]) lsMax[i] = n - lsT; lsT = n; }
 
 void setup() {
     // Start serial communication
@@ -750,7 +757,7 @@ void setup() {
         // Create JSON response with current system state
         AsyncResponseStream *response = request->beginResponseStream("application/json");
 
-        StaticJsonDocument<1792> doc;
+        StaticJsonDocument<2048> doc;
         auto setTemp = [&](const char* key, float v) {
             if (TemperatureSensors::isValidDallasTemp(v)) doc[key] = v; else doc[key] = nullptr;
         };
@@ -804,6 +811,7 @@ void setup() {
         doc["loop_avg_us"] = loopAvgUs;
         doc["loop_max_us"] = loopMaxUs;
         if (WiFi.status() == WL_CONNECTED) doc["rssi"] = WiFi.RSSI();
+        { JsonObject ls = doc.createNestedObject("loop_us"); for (int i = 0; i < LS_COUNT; i++) ls[LS_NAMES[i]] = lsPub[i]; }
         { float pv = pidProcessValue(); if (!isnan(pv)) doc["pid_value"] = pv; else doc["pid_value"] = nullptr; }
 
         // Add servo range configuration
@@ -1836,7 +1844,7 @@ void setup() {
             String("{\"success\":true,\"available\":") + (display.isAvailable() ? "true" : "false") + "}");
     });
 
-    // GET /api/i2c/scan — software I2C scan (bit-bang, push-pull) on OLED pins.
+    // GET /api/i2c/scan — bit-banged I2C scan (bit-bang, push-pull) on OLED pins.
     // Uses OUTPUT for driving data bits so the line rises instantly (no slow pullup
     // rise-time false-ACK). Only the ACK bit releases SDA to INPUT so the device
     // can pull it low. Wire hardware I2C is not used.
@@ -1896,8 +1904,8 @@ void setup() {
             }
         }
 
-        // Leave pins as idle-high outputs so U8g2 can retake them normally
-        digitalWrite(sda, HIGH); digitalWrite(scl, HIGH);
+        // The scan took the pins as plain GPIO: hand them back to the I2C peripheral the display uses
+        Wire.end(); Wire.begin(sda, scl);
 
         doc["count"]   = (int)found.size();
         doc["sda_pin"] = sda;
@@ -1929,7 +1937,7 @@ void setup() {
     logBuffer.log("Web server started on port " + String(WEB_SERVER_PORT));
 
     // Set display to toggle screens every 5 seconds
-    display.setScreenToggleInterval(5000);
+    display.setScreenToggleCycles(3);   // 3 redraws × DISPLAY_UPDATE_MS = 6 s per screen
 
     // Initial async temperature request before self-test reads
     sensors.requestTemperatures();
@@ -1955,13 +1963,16 @@ void loop() {
         lpLastUs = nowUs;
         if (millis() - lpWindowStart >= 2000) {
             loopAvgUs = lpN ? lpSumUs / lpN : 0; loopMaxUs = lpMaxUs;
+            memcpy(lsPub, lsMax, sizeof(lsPub)); memset(lsMax, 0, sizeof(lsMax));
             lpSumUs = lpMaxUs = lpN = 0; lpWindowStart = millis();
         }
     }
     unsigned long currentMillis = millis();
+    lsT = micros();
 
     // Update network manager (handles WiFi connection, MQTT reconnection and OTA)
     networkManager.update();
+    lsLap(LS_NET);
 
     // UI-requested self-test (blocking, a few seconds, manual mode only)
     if (selfTestRequested) {
@@ -1976,6 +1987,8 @@ void loop() {
         if (fansRelay.tick())        logBuffer.log("Ventiladores: "      + String(fansRelay.getState()        ? "ON" : "OFF"));
         if (otherRelay.tick())       logBuffer.log("Relé auxiliar: "     + String(otherRelay.getState()       ? "ON" : "OFF"));
     }
+
+    lsLap(LS_RELAYS);
 
     // Read sensors every second
     if (currentMillis - lastSensorRead >= 1000) {
@@ -2001,6 +2014,7 @@ void loop() {
             readSensors();
         }
         updateHeldTemps();
+        lsLap(LS_SENSORS);
 
         // Check operation conditions
         // Flue-gas thermocouple with hysteresis: on above T, off below T - hysteresis
@@ -2041,11 +2055,15 @@ void loop() {
         }
     }
 
+    lsLap(LS_CONTROL);
+
     // History sample every HISTORY_SAMPLE_INTERVAL_MS (1 s)
     if (currentMillis - lastHistoryRecord >= HISTORY_SAMPLE_INTERVAL_MS) {
         lastHistoryRecord = currentMillis;
         recordHistory();
     }
+
+    lsLap(LS_HISTORY);
 
     // PID + servo update — only in automatic mode
     if (currentMillis - lastControlUpdate >= PID_SAMPLE_TIME && !killSwitchActive && !manualMode && !waterSensorFault) {
@@ -2078,6 +2096,8 @@ void loop() {
         prevBurning = isBurning;
     }
 
+    lsLap(LS_PID);
+
     if (displayTestRequested) {
         displayTestRequested = false;
         char sdaLine[16], sclLine[16];
@@ -2097,8 +2117,8 @@ void loop() {
         }
     }
 
-    // Update display every 500ms (not while a test frame is being shown)
-    if (currentMillis - lastDisplayUpdate >= 500 && currentMillis >= displayHoldUntil) {
+    // Update display every DISPLAY_UPDATE_MS (not while a test frame is being shown)
+    if (currentMillis - lastDisplayUpdate >= DISPLAY_UPDATE_MS && currentMillis >= displayHoldUntil) {
         lastDisplayUpdate = currentMillis;
 
         // Update display with current values
@@ -2115,6 +2135,8 @@ void loop() {
         );
     }
 
+    lsLap(LS_DISPLAY);
+
     // MQTT keepalive + incoming message processing (every loop iteration)
     homeAssistant.tick();
 
@@ -2123,4 +2145,5 @@ void loop() {
         lastMqttUpdate = currentMillis;
         updateHomeAssistant();
     }
+    lsLap(LS_MQTT);
 }
