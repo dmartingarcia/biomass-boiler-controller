@@ -465,6 +465,14 @@ table.dt td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
     </div>
 
     <div class="card">
+        <div class="chart-head"><h2 style="margin:0">Sistema <span class="sub">RAM · ciclo del loop · WiFi · se guarda en este navegador</span></h2>
+            <button type="button" class="btn grey sm" onclick="sysClear()">Borrar</button></div>
+        <div class="chart-wrap" id="sys-wrap"><canvas id="sys-chart"></canvas></div>
+        <div class="cap" id="sys-cap"></div>
+        <div id="sys-events" class="mono" style="font-size:12px;margin-top:8px"></div>
+    </div>
+
+    <div class="card">
         <h2>Logs del sistema</h2>
         <div class="logs" id="logs">Cargando...</div>
     </div>
@@ -552,6 +560,7 @@ document.querySelectorAll('#live-sort button').forEach(b => b.addEventListener('
 
 function applyStatus(d) {
     ST = d;
+    sysSample(d);
     setTemp('t-boiler-supply', d.boiler_supply); setTemp('t-boiler-return', d.boiler_return);
     setTemp('t-boiler-iron', d.boiler_iron);     setTemp('t-floor-supply', d.floor_supply);
     setTemp('t-floor-return', d.floor_return);   setTemp('t-mix-supply', d.mix_supply);
@@ -639,9 +648,11 @@ function pollStatus(fresh) {
                 const r = await fetch('/api/status', { signal: ac.signal });
                 applyStatus(await r.json());
                 failCount = 0;
+                if (sysWasOffline) { sysWasOffline = false; sysEvent('Conexión con la placa recuperada'); }
                 $('conn-dot').className = 'dot'; $('conn-txt').textContent = '';
             } catch (e) {
-                if (++failCount >= 2) { $('conn-dot').className = 'dot off'; $('conn-txt').textContent = 'sin conexión'; }
+                if (++failCount >= 2 && !sysWasOffline) { sysWasOffline = true; sysEvent('Sin conexión con la placa'); }
+                if (failCount >= 2) { $('conn-dot').className = 'dot off'; $('conn-txt').textContent = 'sin conexión'; }
             } finally { clearTimeout(to); }
         } while (statusRerun);
     })().finally(() => { statusInFlight = null; });
@@ -833,6 +844,7 @@ class Chart {
     }
     draw() {
         const cv = this.cv, o = this.opt;
+        const HD = o.data ? o.data() : HIST;
         const dpr = window.devicePixelRatio || 1;
         const W = this.wrap.clientWidth; if (!W) return;
         const strips = o.strips ? STRIPS.length : 0;
@@ -847,10 +859,10 @@ class Chart {
         const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
         g.font = '11px -apple-system, Segoe UI, sans-serif';
 
-        if (!HIST) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('Cargando…', W / 2, 40); return; }
+        if (!HD) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('Cargando…', W / 2, 40); return; }
         if (!panels.length) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('Selecciona alguna serie en la leyenda', W / 2, 40); this.geo = null; return; }
 
-        const t0 = HIST.t0;
+        const t0 = HD.t0;
         // visible window as ages (seconds before t0): from (older) .. to (newer)
         const from = this.view ? (t0 - this.view.a) / 1000 : o.range();
         const to   = this.view ? (t0 - this.view.b) / 1000 : 0;
@@ -881,7 +893,7 @@ class Chart {
             g.fillText(pd.title, L, top - 5); g.font = '11px -apple-system, Segoe UI, sans-serif';
 
             let lo = Infinity, hi = -Infinity, n = 0;
-            pd.series.forEach(sr => (HIST.pts[sr.id] || []).forEach(p => { if (p.v != null && inV(p)) { lo = Math.min(lo, p.v); hi = Math.max(hi, p.v); n++; } }));
+            pd.series.forEach(sr => (HD.pts[sr.id] || []).forEach(p => { if (p.v != null && inV(p)) { lo = Math.min(lo, p.v); hi = Math.max(hi, p.v); n++; } }));
             if (!n) { g.fillStyle = cText; g.textAlign = 'center'; g.fillText('sin datos en este intervalo', L + pw / 2, top + ph / 2); return; }
             anyData = true;
             const pad = Math.max(2, (hi - lo) * 0.08); lo -= pad; hi += pad;
@@ -904,7 +916,7 @@ class Chart {
             g.lineWidth = o.thin ? 1.6 : 2; g.lineJoin = 'round';
             pd.series.forEach(sr => {
                 g.strokeStyle = sr.color; g.beginPath(); let pen = false;
-                (HIST.pts[sr.id] || []).forEach(p => { if (p.v == null) { pen = false; return; } const x = X(p.age), yy = Y(p.v); if (!pen) { g.moveTo(x, yy); pen = true; } else g.lineTo(x, yy); });
+                (HD.pts[sr.id] || []).forEach(p => { if (p.v == null) { pen = false; return; } const x = X(p.age), yy = Y(p.v); if (!pen) { g.moveTo(x, yy); pen = true; } else g.lineTo(x, yy); });
                 g.stroke();
             });
             g.restore();
@@ -914,7 +926,7 @@ class Chart {
             const tol = Math.max(200, span / 80);
             pd.series.forEach(sr => {
                 let best = null, bd = Infinity;
-                (HIST.pts[sr.id] || []).forEach(p => { const d = Math.abs(p.age - selAge); if (d < bd && p.v != null) { bd = d; best = p; } });
+                (HD.pts[sr.id] || []).forEach(p => { const d = Math.abs(p.age - selAge); if (d < bd && p.v != null) { bd = d; best = p; } });
                 if (best && bd < tol) { g.fillStyle = sr.color; g.beginPath(); g.arc(X(best.age), Y(best.v), 3.5, 0, 7); g.fill(); picks.push({ s: sr, v: best.v }); }
             });
         });
@@ -930,9 +942,9 @@ class Chart {
                 const yy = y0 + i * 9;
                 g.fillStyle = cLine; g.globalAlpha = .35; g.fillRect(L, yy, pw, 6); g.globalAlpha = 1;
                 g.save(); g.beginPath(); g.rect(L, yy, pw, 6); g.clip(); g.fillStyle = st.color;
-                HIST.flags.forEach((p, k) => {
+                HD.flags.forEach((p, k) => {
                     if (!(p.f & st.bit)) return;
-                    const nxt = HIST.flags[k + 1]; const x1 = X(p.age), x2 = nxt ? X(nxt.age) : X(0);
+                    const nxt = HD.flags[k + 1]; const x1 = X(p.age), x2 = nxt ? X(nxt.age) : X(0);
                     g.fillRect(x1, yy, Math.max(1.5, x2 - x1), 6);
                 });
                 g.restore();
@@ -978,7 +990,76 @@ const miniChart = new Chart($('mini-chart'), $('mini-wrap'), { panels: [
 const bigChart  = new Chart($('big-chart'),  $('big-wrap'),  { panels: [
     { title: 'Temperaturas (°C)', series: SERIES, height: 320 },
 ], range: () => rangeSec, strips: true, zoom: true, onSelect: renderDetail, onZoom: z => { $('btn-zoom').style.display = z ? 'inline-block' : 'none'; } });
-function redrawCharts() { miniChart.draw(); bigChart.draw(); updateLegend(); }
+/* ── System chart (diagnostics): RAM, loop cycle, WiFi ────────────
+   The board keeps no history of this. The browser samples /api/status while it is open
+   (one point per 10 s: min free heap, mean/max loop cycle, mean RSSI) and keeps 24 h in
+   localStorage. Reboots and connection drops are logged as events. */
+const SYS_SERIES = [
+    { id: 'sys_heap',     label: 'RAM libre',    color: '#1c7ed6', u: ' KB',  d: 0, i: 1 },
+    { id: 'sys_heapmax',  label: 'Bloque mayor', color: '#9c36b5', u: ' KB',  d: 0, i: 2 },
+    { id: 'sys_loop_avg', label: 'Ciclo medio',  color: '#2f9e44', u: ' ms',  d: 2, i: 3 },
+    { id: 'sys_loop_max', label: 'Ciclo máx.',   color: '#e03131', u: ' ms',  d: 1, i: 4 },
+    { id: 'sys_rssi',     label: 'WiFi',         color: '#f59f00', u: ' dBm', d: 0, i: 5 },
+];
+const SYS_BUCKET_MS = 10000, SYS_KEEP_MS = 86400000;
+let SYSH = [], SYS_EV = [], sysAcc = null, sysCache = null, sysCacheAt = 0, sysPrevUp = null, sysPrevBoot = null, sysWasOffline = false;
+try { SYSH = JSON.parse(localStorage.getItem('sysHist') || '[]'); SYS_EV = JSON.parse(localStorage.getItem('sysEv') || '[]'); } catch (e) {}
+function sysSave() {
+    try { localStorage.setItem('sysHist', JSON.stringify(SYSH)); localStorage.setItem('sysEv', JSON.stringify(SYS_EV)); } catch (e) {}
+}
+function sysEvent(msg) { SYS_EV.push([Date.now(), msg]); if (SYS_EV.length > 60) SYS_EV.shift(); sysCache = null; renderSysEvents(); sysSave(); }
+function sysClear() { SYSH = []; SYS_EV = []; sysAcc = null; sysCache = null; sysSave(); renderSysEvents(); sysChart.draw(); }
+function renderSysEvents() {
+    const el = $('sys-events'); if (!el) return;
+    el.innerHTML = SYS_EV.slice(-8).reverse().map(e => '<div>' + clock(e[0], true, true) + ' · ' + e[1].replace(/</g, '&lt;') + '</div>').join('');
+}
+function sysFlush() {
+    const a = sysAcc; if (!a || !a.n) return;
+    const r = d => a[d] / a.n;
+    SYSH.push([Math.round(a.t0 + SYS_BUCKET_MS / 2), a.hf / 1024, a.hm / 1024, r('la') / 1000, a.lm / 1000, a.rs ? a.rs / a.rsN : null]);
+    const cut = Date.now() - SYS_KEEP_MS; while (SYSH.length && SYSH[0][0] < cut) SYSH.shift();
+    sysCache = null; sysChart.draw();
+}
+function sysSample(d) {
+    if (d.heap_free == null) return;
+    const now = Date.now();
+    if (sysPrevUp != null && d.uptime_s < sysPrevUp - 2) sysEvent('Reinicio de la placa: ' + (d.reset_reason || '?'));
+    else if (sysPrevBoot != null && d.boot_count > sysPrevBoot) sysEvent('Reinicio de la placa: ' + (d.reset_reason || '?'));
+    sysPrevUp = d.uptime_s; sysPrevBoot = d.boot_count;
+    if (sysAcc && now - sysAcc.t0 >= SYS_BUCKET_MS) { sysFlush(); sysAcc = null; }
+    if (!sysAcc) sysAcc = { t0: now, n: 0, hf: Infinity, hm: Infinity, la: 0, lm: 0, rs: 0, rsN: 0 };
+    sysAcc.n++; sysAcc.hf = Math.min(sysAcc.hf, d.heap_free); sysAcc.hm = Math.min(sysAcc.hm, d.heap_max_block);
+    sysAcc.la += d.loop_avg_us || 0; sysAcc.lm = Math.max(sysAcc.lm, d.loop_max_us || 0);
+    if (d.rssi != null) { sysAcc.rs += d.rssi; sysAcc.rsN++; }
+}
+function sysData() {
+    const now = Date.now();
+    if (sysCache && now - sysCacheAt < 5000) return sysCache;
+    const pts = {};
+    SYS_SERIES.forEach(sr => {
+        const arr = []; let prev = null;
+        SYSH.forEach(r => {
+            if (prev != null && r[0] - prev > 60000) arr.push({ age: (now - (prev + 1000)) / 1000, v: null });   // gap: break the line
+            arr.push({ age: (now - r[0]) / 1000, v: r[sr.i] }); prev = r[0];
+        });
+        pts[sr.id] = arr;
+    });
+    sysCache = { pts, flags: [], t0: now }; sysCacheAt = now;
+    return sysCache;
+}
+const sysById = id => SYS_SERIES.find(x => x.id === id);
+const sysChart = new Chart($('sys-chart'), $('sys-wrap'), { panels: [
+    { title: 'Memoria libre (KB)',  series: [sysById('sys_heap'), sysById('sys_heapmax')], height: 110 },
+    { title: 'Ciclo del loop (ms)', series: [sysById('sys_loop_avg'), sysById('sys_loop_max')], height: 110 },
+    { title: 'WiFi (dBm)',          series: [sysById('sys_rssi')], height: 80 },
+], range: () => Math.min(86400, Math.max(600, SYSH.length ? (Date.now() - SYSH[0][0]) / 1000 + 30 : 600)), forceAll: true, zoom: true, data: sysData,
+   onSelect: (age, picks, ts) => { const el = $('sys-cap'); if (el) el.textContent = clock(ts, true, true) + (picks.length ? ' · ' + picks.map(p => p.s.label + ' ' + p.v.toFixed(p.s.d) + p.s.u).join(' · ') : ' · sin datos'); } });
+renderSysEvents();
+window.addEventListener('resize', () => sysChart.draw());
+setInterval(sysSave, 60000);
+window.addEventListener('pagehide', () => { sysFlush(); sysSave(); });
+
+function redrawCharts() { miniChart.draw(); bigChart.draw(); sysChart.draw(); updateLegend(); }
 window.addEventListener('resize', redrawCharts);
 if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redrawCharts);
 

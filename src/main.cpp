@@ -625,6 +625,11 @@ void onAPModeStarted() {
 // If loop() doesn't run for this long the board panics and reboots (boots into auto mode)
 #define LOOP_WDT_TIMEOUT_S 60
 
+// loop() cycle time (time between two consecutive calls), published every 2 s for the UI charts
+static uint32_t lpLastUs = 0, lpSumUs = 0, lpMaxUs = 0, lpN = 0;
+static unsigned long lpWindowStart = 0;
+static volatile uint32_t loopAvgUs = 0, loopMaxUs = 0;
+
 void setup() {
     // Start serial communication
     Serial.begin(115200);
@@ -745,7 +750,7 @@ void setup() {
         // Create JSON response with current system state
         AsyncResponseStream *response = request->beginResponseStream("application/json");
 
-        StaticJsonDocument<1536> doc;
+        StaticJsonDocument<1792> doc;
         auto setTemp = [&](const char* key, float v) {
             if (TemperatureSensors::isValidDallasTemp(v)) doc[key] = v; else doc[key] = nullptr;
         };
@@ -796,6 +801,9 @@ void setup() {
         doc["boot_history"] = bootHistory;
         doc["heap_free"] = ESP.getFreeHeap();
         doc["heap_max_block"] = ESP.getMaxAllocHeap();
+        doc["loop_avg_us"] = loopAvgUs;
+        doc["loop_max_us"] = loopMaxUs;
+        if (WiFi.status() == WL_CONNECTED) doc["rssi"] = WiFi.RSSI();
         { float pv = pidProcessValue(); if (!isnan(pv)) doc["pid_value"] = pv; else doc["pid_value"] = nullptr; }
 
         // Add servo range configuration
@@ -1941,6 +1949,15 @@ void setup() {
 
 void loop() {
     esp_task_wdt_reset();
+    {
+        uint32_t nowUs = micros();
+        if (lpLastUs) { uint32_t dt = nowUs - lpLastUs; lpSumUs += dt; lpN++; if (dt > lpMaxUs) lpMaxUs = dt; }
+        lpLastUs = nowUs;
+        if (millis() - lpWindowStart >= 2000) {
+            loopAvgUs = lpN ? lpSumUs / lpN : 0; loopMaxUs = lpMaxUs;
+            lpSumUs = lpMaxUs = lpN = 0; lpWindowStart = millis();
+        }
+    }
     unsigned long currentMillis = millis();
 
     // Update network manager (handles WiFi connection, MQTT reconnection and OTA)
