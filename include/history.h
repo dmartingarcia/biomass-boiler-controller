@@ -44,7 +44,7 @@ public:
         HistorySample* bufs[HISTORY_TIERS]    = { buf0, buf1, buf2, buf3 };
         unsigned long step = HISTORY_SAMPLE_INTERVAL_MS / 1000UL;
         for (int i = 0; i < HISTORY_TIERS; i++) {
-            tiers[i] = { bufs[i], caps[i], 0, 0, 0, step };
+            tiers[i] = { bufs[i], caps[i], 0, 0, 0, step, 0 };
             if (i < HISTORY_TIERS - 1) step *= every(i);
         }
     }
@@ -90,7 +90,7 @@ public:
     // Temperatures are tenths of °C (null = invalid); "air" is %, "flags" a bitmask;
     // step = seconds between samples, age = seconds since the tier's newest sample.
     // One tier per request keeps each response small (the caller renders into a fixed buffer).
-    bool writeTierJson(Print& out, const char* tier) {
+    bool writeTierJson(Print& out, const char* tier, long since = -1) {
         const Ring* r = nullptr;
         for (int i = 0; i < HISTORY_TIERS; i++) if (strcmp(tier, tierName(i)) == 0) r = &tiers[i];
         if (!r || !lock || xSemaphoreTake(lock, pdMS_TO_TICKS(500)) != pdTRUE) return false;
@@ -101,7 +101,7 @@ public:
             out.print('"'); out.print(channelName(c)); out.print('"');
         }
         out.print("],");
-        writeTier(out, tier, *r, now);
+        writeTier(out, tier, *r, now, since);
         out.print('}');
         xSemaphoreGive(lock);
         return true;
@@ -115,6 +115,7 @@ private:
         int            count;      // valid samples (≤ cap)
         unsigned long  lastMs;     // millis() of the newest sample
         unsigned long  stepSec;    // seconds between samples of this tier
+        uint32_t       seq;        // total samples ever pushed (the newest one is number seq)
     };
 
     static void push(Ring& r, const HistorySample& s) {
@@ -122,6 +123,7 @@ private:
         r.head = (r.head + 1) % r.cap;
         if (r.count < r.cap) r.count++;
         r.lastMs = millis();
+        r.seq++;
     }
 
     // Average of the newest n samples of a ring (invalid values ignored per channel;
@@ -147,13 +149,24 @@ private:
         return out;
     }
 
-    static void writeTier(Print& out, const char* name, const Ring& r, unsigned long now) {
+    static void writeTier(Print& out, const char* name, const Ring& r, unsigned long now, long since) {
+        // Delta: with since = the newest seq the caller already has, send only the samples
+        // after it. If that is older than what the ring still holds (or newer than seq, e.g.
+        // after a reboot) send everything and flag it "full" so the caller replaces its copy.
+        bool full = since < 0 || (uint32_t)since > r.seq || r.seq - (uint32_t)since > (uint32_t)r.count;
+        int m = full ? r.count : (int)(r.seq - (uint32_t)since);
         out.print('"'); out.print(name); out.print("\":{\"step\":");
         out.print(r.stepSec);
         out.print(",\"age\":");
         out.print(r.count ? (now - r.lastMs) / 1000UL : 0UL);
         out.print(",\"n\":");
-        out.print(r.count);
+        out.print(m);
+        out.print(",\"cap\":");
+        out.print(r.cap);
+        out.print(",\"seq\":");
+        out.print((unsigned long)r.seq);
+        out.print(",\"full\":");
+        out.print(full ? "true" : "false");
         out.print(",\"series\":{");
 
         char tmp[12];
@@ -162,8 +175,8 @@ private:
             out.print('"');
             out.print(c < HISTORY_CHANNELS ? channelName(c) : (c == HISTORY_CHANNELS ? "air" : "flags"));
             out.print("\":[");
-            for (int i = 0; i < r.count; i++) {
-                const HistorySample& s = r.buf[(r.head - r.count + i + r.cap) % r.cap];
+            for (int i = 0; i < m; i++) {
+                const HistorySample& s = r.buf[(r.head - m + i + r.cap) % r.cap];
                 if (i) out.print(',');
                 if (c < HISTORY_CHANNELS) {
                     if (s.t[c] == HISTORY_INVALID) out.print("null");

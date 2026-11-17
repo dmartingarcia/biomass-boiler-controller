@@ -57,6 +57,16 @@ static void test_history() {
     CHECK(c.s.find("\"boiler_supply\":[150,450,750") != std::string::npos, "coarse values are the mean of the right mid samples");
     CHECK(!h.writeTierJson(u, "bogus"), "unknown tier rejected");
 
+    // delta: only the samples after `since`; full when since is too old or from the future
+    Capture d1, d2, d3;
+    h.writeTierJson(d1, "ultra", 4997);       // newest seq is 5000 -> 3 new samples
+    CHECK(d1.s.find("\"n\":3,") != std::string::npos && d1.s.find("\"seq\":5000") != std::string::npos && d1.s.find("\"full\":false") != std::string::npos, "delta: 3 new samples, not full");
+    CHECK(d1.s.find("\"boiler_supply\":[4998,4999,5000]") != std::string::npos, "delta carries exactly the newest samples");
+    h.writeTierJson(d2, "ultra", 100);        // older than the ring holds
+    CHECK(d2.s.find("\"n\":300,") != std::string::npos && d2.s.find("\"full\":true") != std::string::npos, "stale since -> full ring");
+    h.writeTierJson(d3, "ultra", 9999);       // from the future (board rebooted)
+    CHECK(d3.s.find("\"full\":true") != std::string::npos, "since > seq -> full ring");
+
     // invalid readings are skipped when averaging
     TemperatureHistory g; g.begin();
     for (int i = 1; i <= 10; i++) { for (int k = 0; k < HISTORY_CHANNELS; k++) t[k] = 100; t[1] = (i == 3) ? HISTORY_INVALID : 500; fakeMs += 1000; g.record(t, 0, 0); }

@@ -623,15 +623,29 @@ function applyMode(manual, crit) {
     $('btn-selftest').disabled = !manual || selfTestBusy;
 }
 
-async function pollStatus() {
-    try {
-        const r = await fetch('/api/status');
-        applyStatus(await r.json());
-        failCount = 0;
-        $('conn-dot').className = 'dot'; $('conn-txt').textContent = '';
-    } catch (e) {
-        if (++failCount >= 2) { $('conn-dot').className = 'dot off'; $('conn-txt').textContent = 'sin conexión'; }
-    }
+// Never more than one /api/status in flight: the periodic tick is skipped while the previous
+// request is pending (it is aborted after STATUS_TIMEOUT_MS). An explicit refresh (fresh=true,
+// e.g. after an action) is coalesced into at most one extra request run right after.
+const STATUS_TIMEOUT_MS = 5000;
+let statusInFlight = null, statusRerun = false;
+function pollStatus(fresh) {
+    if (statusInFlight) { if (fresh) statusRerun = true; return statusInFlight; }
+    statusInFlight = (async () => {
+        do {
+            statusRerun = false;
+            const ac = new AbortController();
+            const to = setTimeout(() => ac.abort(), STATUS_TIMEOUT_MS);
+            try {
+                const r = await fetch('/api/status', { signal: ac.signal });
+                applyStatus(await r.json());
+                failCount = 0;
+                $('conn-dot').className = 'dot'; $('conn-txt').textContent = '';
+            } catch (e) {
+                if (++failCount >= 2) { $('conn-dot').className = 'dot off'; $('conn-txt').textContent = 'sin conexión'; }
+            } finally { clearTimeout(to); }
+        } while (statusRerun);
+    })().finally(() => { statusInFlight = null; });
+    return statusInFlight;
 }
 
 /* ── Mode + manual actuators ───────────────────────────────────── */
@@ -643,7 +657,7 @@ async function setMode(active) {
         if (!r.ok || !r.data || !r.data.success) toast((r.data && r.data.error) || 'No se pudo cambiar el modo', true);
         else toast(active ? 'Modo manual activado' : 'Modo automático restaurado');
     } catch (e) { toast('Error de red', true); }
-    await pollStatus();
+    await pollStatus(true);
     userChangingMode = false;
 }
 
@@ -653,7 +667,7 @@ async function sendActuator(cmd) {
         if (!r.ok || !r.data || !r.data.success) { toast((r.data && r.data.error) || 'Error', true); return false; }
         return true;
     } catch (e) { toast('Error de red', true); return false; }
-    finally { pollStatus(); }
+    finally { pollStatus(true); }
 }
 
 async function toggleRelay(key, input) {
@@ -736,13 +750,29 @@ function buildHist(parts) {
 // The ESP renders one tier per request, so they are fetched one after another. The tiers
 // are cached: the 1 s tier is refreshed often, the coarser ones only once in a while.
 const histParts = {};
+function mergeTier(oldPart, d, k) {
+    const old = oldPart && oldPart[k], t = d[k];
+    if (!old || t.full) return d;
+    const series = {};
+    for (const ch in old.series) {
+        const a = old.series[ch].concat(t.series[ch] || []);
+        series[ch] = a.length > t.cap ? a.slice(a.length - t.cap) : a;
+    }
+    const n = series[Object.keys(series)[0]].length;
+    return { channels: d.channels, [k]: Object.assign({}, t, { series, n, full: true }) };
+}
 let historyLoading = false;
 async function loadHistory(which) {
     if (historyLoading) return;
     historyLoading = true;
     try {
         for (const k of (which || TIERS)) {
-            try { const d = await (await fetch('/api/history?tier=' + k)).json(); if (!d.error) histParts[k] = d; } catch (e) {}
+            try {
+                // Ask only for samples newer than the ones we hold; the ESP answers "full" when it can't do a delta
+                const old = histParts[k] && histParts[k][k];
+                const d = await (await fetch('/api/history?tier=' + k + (old && old.seq != null ? '&since=' + old.seq : ''))).json();
+                if (!d.error) histParts[k] = mergeTier(histParts[k], d, k);
+            } catch (e) {}
         }
         if (Object.keys(histParts).length) { HIST = buildHist(histParts); redrawCharts(); }
     } finally { historyLoading = false; }
@@ -1218,7 +1248,7 @@ function resetConfig() {
 async function toggleAutotune() {
     const was = !!(ST && ST.auto_tuning);
     try { await api('/api/settings', 'POST', { autotune: true }); } catch (e) { return toast('Error de red', true); }
-    await pollStatus();
+    await pollStatus(true);
     if (!was && !(ST && ST.auto_tuning)) toast('No se pudo iniciar: hace falta combustión, modo automático y sin alarmas', true);
 }
 
@@ -1322,7 +1352,7 @@ async function assignRelay(role, channel) {
         const r = await api('/api/relays/map', 'POST', { role, channel: parseInt(channel) });
         if (r.data && r.data.success) toast('Canal asignado'); else toast('Error: ' + ((r.data && r.data.error) || '?'), true);
     } catch (e) { toast('Error de red', true); }
-    loadRelayMap(); pollStatus();
+    loadRelayMap(); pollStatus(true);
 }
 loadRelayMap();
 
@@ -1450,7 +1480,7 @@ setInterval(() => { updateDallas(); updateLogs(); }, 2000);
 setInterval(updateMqttStatus, 5000);
 setInterval(() => { if (!document.hidden) loadHistory(); }, 60000);
 setInterval(() => { if (!document.hidden && HIST && !chartIdle()) loadHistory(['ultra']); }, 5000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { pollStatus(); loadHistory(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { pollStatus(true); loadHistory(); } });
 loadDisplayStatus();
 let startPage = 'dashboard';
 try { const p = localStorage.getItem('page'); if (p && $('page-' + p)) startPage = p; } catch (e) {}

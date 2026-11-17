@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
 
 // Include project header files
 #include "config.h"
@@ -621,9 +622,14 @@ void onAPModeStarted() {
     display.setScreen(Display::SCREEN_NETWORK_INFO);
 }
 
+// If loop() doesn't run for this long the board panics and reboots (boots into auto mode)
+#define LOOP_WDT_TIMEOUT_S 60
+
 void setup() {
     // Start serial communication
     Serial.begin(115200);
+    esp_task_wdt_init(LOOP_WDT_TIMEOUT_S, true);   // panic -> reset
+    esp_task_wdt_add(NULL);                        // watch the Arduino loop task
     Serial.println("\n\n--- Lumber Boiler Manager ---");
     Serial.println("Starting...");
 
@@ -1760,7 +1766,8 @@ void setup() {
             return;
         }
         HistoryBuffer out(historyJson, sizeof(historyJson));
-        if (!history.writeTierJson(out, tier) || out.overflow()) {
+        long since = request->hasParam("since") ? request->getParam("since")->value().toInt() : -1;
+        if (!history.writeTierJson(out, tier, since) || out.overflow()) {
             request->send(out.overflow() ? 500 : 400, "application/json", "{\"error\":\"history unavailable\"}");
             return;
         }
@@ -1933,6 +1940,7 @@ void setup() {
 }
 
 void loop() {
+    esp_task_wdt_reset();
     unsigned long currentMillis = millis();
 
     // Update network manager (handles WiFi connection, MQTT reconnection and OTA)
